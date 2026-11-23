@@ -1,4 +1,4 @@
-import { makeCabin, pilotLamp, floorAt } from './cabin.mjs';
+import { makeCabin, pilotLamp, pathX, floorAt } from './cabin.mjs';
 import * as THREE from './vendor/three.module.js';
 import { ReachGrab, EyeAim } from './gesture.mjs';
 import { ECHO_DURATION, makePond, shore } from './pond.mjs';
