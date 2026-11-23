@@ -1,0 +1,27 @@
+*{box-sizing:border-box} [hidden]{display:none!important}
+:root{color-scheme:dark;font-family:"Microsoft YaHei UI","Segoe UI",sans-serif;color:#fffbec}
+body{margin:0;background:#1d2030;overflow:hidden}
+#world,.scrim{position:fixed;inset:0;width:100%;height:100%}.scrim{pointer-events:none;background:linear-gradient(180deg,#14172a55,transparent 23%,transparent 83%,#14172a44)}
+header,.route,.camera-preview,.intro,#tracking,#specimenRecord{position:fixed}
+header{left:3vw;top:3vh;font-size:12px;letter-spacing:.1em;text-shadow:0 1px 8px #172428}.identity-mark{color:#ffdfa6;margin-right:8px}
+.intro{left:50%;top:48%;width:min(90vw,550px);transform:translate(-50%,-50%);text-align:center;padding:22px;border-radius:20px;background:#192333db}
+h1{font:400 58px SimSun,serif;margin:0}.privacy,.camera-legend,#count{font-size:11px;color:#eee3ca}
+.route,.camera-preview,#specimenRecord{border:1px solid #ffe7b640;border-radius:12px;background:#15232ddc;box-shadow:0 6px 20px #15182033;overflow:hidden}
+.route{left:3vw;top:8vh;width:clamp(129px,16vw,184px);padding:10px 12px}.route canvas{width:100%;display:block}#mode{color:#c5e7e3;font-size:11px;letter-spacing:.12em}#task{font-size:13px;margin:3px 0 1px}
+.camera-preview{right:3vw;top:3vh;width:clamp(96px,12vw,158px)}.camera-picture{position:relative;aspect-ratio:var(--camera-ratio,4 / 3)}#camera,#trackingOverlay{position:absolute;width:100%;height:100%;inset:0;transform:scaleX(-1)}.camera-legend{padding:5px 8px;display:flex;justify-content:space-between}.camera-legend i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#95e9db;margin-right:3px}.camera-legend span+span i{background:#ffdb95}
+#marker,#palm{position:fixed;pointer-events:none;z-index:2}#ring{position:absolute;left:-17px;top:-17px;width:34px;height:34px;border-radius:50%;border:1px solid #ffedb5bb;box-shadow:0 0 12px #ffe095a8}
+#marker.focus #ring{border:2px solid #fff4cc;box-shadow:0 0 20px #ffdf8b}#marker.edge #ring{display:none}#marker.ready #ring{transform:scale(.77);border:2px solid #9affd4}
+#bubble{position:absolute;display:block;white-space:nowrap;padding:6px 11px;border-radius:14px;background:#142432ed;color:#fff6dc;font-size:clamp(12px,1.3vw,16px);box-shadow:0 2px 8px #10203044}
+#arrow{position:absolute;left:-14px;top:-16px;width:28px;text-align:center;color:#fff0a8;font-size:25px;line-height:30px;text-shadow:0 0 10px #ffe260}
+#palm{transform:translate(-50%,-50%);color:#fff2c2;border:1px solid #fff1bb;border-radius:50%;width:24px;height:24px;text-align:center;line-height:22px;box-shadow:0 0 10px #ffe49c}
+#tracking{left:50%;top:4vh;transform:translateX(-50%);margin:0;border-radius:12px;background:#132534e8;padding:8px 14px;font-size:13px;text-align:center}
+#tracking:empty{display:none}#specimenRecord{right:3vw;bottom:3vh;width:165px;margin:0;padding:7px;text-align:center;font-size:11px}#specimenPair{width:100%}
+.route{top:auto;bottom:3vh;width:clamp(160px,20vw,244px)}
+.botanical #ring{display:none}
+.botanical #arrow{color:#b9fff2;text-shadow:0 0 8px #52ddcd;transition:opacity .4s}
+.botanical.observing #arrow{opacity:.23}
+
+.chapterAction{color:#eef9ef;border-radius:8px;border:1px solid #c0d9c055;background:#294341;padding:9px 12px;text-align:center;font-size:14px}
+#backDoor{margin-top:7px;padding:6px}.chapterAction.hot{background:#54746a;outline:2px solid #c8f5e1}
+.chapterAction.locked{opacity:.45}.plantLabel{position:fixed;transform:translate(-50%,38px);text-shadow:0 1px 4px #000;background:#132c32d9;padding:3px 7px;border-radius:6px;font-size:11px;pointer-events:none}
+#chapterMenu{position:fixed;inset:0;background:#101d2ac7;display:grid;place-items:center;z-index:10}.chapterPanel{width:min(480px,88vw);padding:24px;background:#172d35;border:1px solid #bedaca5c;border-radius:18px;text-align:center}.chapterPanel h2{font:normal 30px SimSun,serif;margin:0}.chapterPanel p{font-size:13px;color:#bcd0c9}.chapterCards{display:flex;gap:12px;margin:15px 0}.chapterCard{flex:1}.thumb{height:65px;border-radius:8px;margin-bottom:4px}.bay{background:center/cover url('./assets/sleeping-lotus.png')}.glass{background:radial-gradient(ellipse at bottom,#6e9e87,#244e54 70%);color:#acd5b7;font:52px Georgia}#palm{z-index:12}
