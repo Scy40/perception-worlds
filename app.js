@@ -1,19 +1,22 @@
+import { makeTracker } from './assets/tracking-model.mjs';
 import { makeCabin, pilotLamp, pathX, floorAt, scanDuration } from './cabin.mjs';
 import * as THREE from './vendor/three.module.js';
 import { ReachGrab, EyeAim, Pinch } from './gesture.mjs';
 import { ECHO_DURATION, makePond, shore } from './pond.mjs';
-import { eyeCenter, HeadWindow, WindowProjection } from './window-view.mjs';
+import { eyeCenter, HeadWindow, WindowProjection, quietLook, followAngle } from './window-view.mjs';
 
 const $ = id => document.getElementById(id);
 const video = $('camera');
 const canvas = $('world'), overlay = $('trackingOverlay'), pen = overlay.getContext('2d');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.07, 110);
+const viewShift = new THREE.Vector3(), desiredShift = new THREE.Vector3();
 const windowView = new WindowProjection(camera);
 const tracker = new HeadWindow();
 const { scene, update: updatePond, info: locate, reflect, steer, targetCount } = await makePond();
 
 const pinch=new Pinch();
+let ringFlashUntil=-Infinity;
 let releaseSince=0;
 let routeStop=0,optionalWait=0,heldOpen=0,handGone=0;
 const detector=new ReachGrab(), eyes=new EyeAim();
@@ -23,17 +26,18 @@ const handPaths=[[0,1,2,3,4],[0,5,6,7,8],[5,9,10,11,12],[9,13,14,15,16],[13,17,1
 const cabinPhases=['descent','teach','choose','walk','inspect','complete'];
 const greenhousePhase=()=>cabinPhases.includes(phase);
 const clamp=THREE.MathUtils.clamp;
-let stream,hand,face,files,vision,facePoints,handPoints,house;
+let stream,hand,face,facePoints,handPoints,house;
 let audio,gain,habitat,nextBird=0,soundOn=true;
 let phase='idle',phaseAt=0,started=false,foundCount=0,phaseTime=0,gameTime=0;
 let yaw=0,pitch=0,turnTo=0,tiltTo=0,headYaw=0,headTilt=0,echo=0,pulse=null,nextEcho=0;
 let flightStart=new THREE.Vector3(),destination=new THREE.Vector3();
 let lastFrame=performance.now(),lastFaceAt=-Infinity,lastHandAt=-Infinity,lastVideo=-1,faceNext=true;
 
+let lastGoodFaceAt=-Infinity;
 let screen=null,palm=null,ready=false,lockUntil=0,missUntil=0,feedback='',noteUntil=0,anchored=false;
-let cameraBusy=false, generation=0;
+let cameraBusy=false, retryAt=0, startupProblem='', generation=0;
 
-const tasks={daylight:'跟随萤火虫',hunt:'张手靠近，合手接住萤火虫',found:'张开手，让它带路',flight:'循着回声与光迹前进',end:'前往巡检灯',descent:'沿玻璃坡道进入水下温室',teach:'巡检任务 · 找出两株与上次不同的植物',choose:'自由选择下一处花台',walk:'沿步道前往花台',inspect:'巡检两侧花台，各找一处异常',complete:'巡检完成 · 两处异常已归档'};
+const tasks={daylight:'跟随萤火虫',hunt:'张手靠近，合手接住萤火虫',found:'张开手，让它带路',flight:'循着回声与光迹前进',end:'前往巡检灯',descent:'沿玻璃坡道进入水下温室',teach:'先扫描铃兰',choose:'自由选择下一处花台',walk:'沿步道前往花台',inspect:'每个花台归档一处发现',complete:'自由探索'};
 function headingTo(target){
   const dx=target.x-explorer.x,dz=target.z-explorer.z;
   const angle=Math.atan2(-dx,-dz)-yaw;
@@ -42,18 +46,19 @@ function headingTo(target){
 }
 let saved=false;
 try{saved=localStorage.getItem('lotus-bay:glasshouse')==='1';}catch{}
-let menu=false, focusPlant=null, viewed=null, dwell=0, actionKey='', finishAt=Infinity;
+let menu=false, focusPlant=null, viewed=null, dwell=0, actionKey='';
 const checkpoints=['backDoor','fromBay','fromHouse','resumeRun'];
 function resetFocus(){focusPlant=viewed=null;dwell=0;ready=false;detector.reset();screen=null;}
 function openMenu(open){
   menu=open;ready=false;
   if(anomalyArrow)anomalyArrow.hidden=true;
-  $('menuTitle').textContent=phase==='complete'?'巡检完成 · 找到了两株变异植物':'选择体验起点';
+  $('scanRecord').hidden=true;
+  $('menuTitle').textContent=phase==='complete'?'温室 · 自由探索':'选择体验起点';
   $('fromBay').textContent=phase==='complete'?'回到睡莲湾':'从睡莲湾开始';actionKey='';detector.reset();silence();
   $('plantLabels').hidden=open;$('guideText').hidden=open;$('echoStatus').hidden=open;$('aimDot').hidden=true;
   $('chapterMenu').hidden=!open;$('marker').hidden=open;$('fromHouse').classList.toggle('locked',!saved);
   $('fromHouse').textContent=saved?(phase==='complete'?'再巡检一次':'从温室开始'):'到达温室后解锁';
-  $('resumeRun').textContent=phase==='complete'?'回看两处发现':'继续当前体验';
+  $('resumeRun').textContent=phase==='complete'?'继续探索':'继续当前体验';
   for(const id of checkpoints)$(id).classList.toggle('hot',false);
   if(open)audio?.suspend();else if(soundOn)ensureAudio();
 }
@@ -74,7 +79,7 @@ function controlAt(point){
   return '';
 }
 function menuHand(now,pressed){
-  const id=controlAt(palm)||controlAt(eyes.point);
+  const id=controlAt(palm);
   if(actionKey!==id){detector.reset();actionKey=id;}
   for(const k of checkpoints)$(k).classList.toggle('hot',k===id);
   if(!id&&!menu)return false;
@@ -96,10 +101,10 @@ const stationSigns = [
 let station=-1, chosenSign=null, scanning=null, focusAge=0;
 const crossSign={name:'',point:new THREE.Vector3(),station:0};
 let anomalyArrow;
-const returnSign={name:'回到岔口',point:new THREE.Vector3(),station:-1};
+const returnSign={name:'回到过道',point:new THREE.Vector3(),station:-1};
 function enterHouse(){
   house??=makeCabin(scene);house.open();house.arrange();
-  resetFocus();station=-1;scanning=chosenSign=null;finishAt=Infinity;pulse=null;echo=0;
+  resetFocus();station=-1;scanning=chosenSign=null;pulse=null;echo=0;
   explorer.set(pathX(-18),0,-18);insect.copy(pilotLamp);
   headingTo(plantPoint(house.teacher));yaw=turnTo;pitch=tiltTo;
   changePhase('descent');labelsReady();
@@ -117,27 +122,29 @@ function plantPoint(p){
   return p.group.position.clone().add(new THREE.Vector3(0,.43,0));
 }
 function plantProgress(){return house.pots.filter(p=>p.marked).length;}
+function bedsRecorded(){return new Set(house.pots.filter(p=>p.marked).map(p=>p.station)).size;}
+function recordCount(){return '花台 '+bedsRecorded()+'/2 · 发现 '+plantProgress()+'/'+house.pots.filter(p=>p.extra).length;}
 function markPlant(p){
-  if(!p.extra){signalText('轮廓吻合 · 这株生长正常');return;}
+  if(!p.extra||p.marked)return;
   p.marked=true;
-  const n=plantProgress();
-  signalText(p.kind==='鹿角蕨'?'发现已记录 · 额外的分叉':'发现已记录 · 一茎双芽');
-  $('count').textContent='巡检记录 '+n+' / 2';
+  if(bedsRecorded()===2 && phase!=='complete')changePhase('complete');
+  signalText(p.kind+' · '+p.finding[0]+'已归档');
+  $('count').textContent=recordCount();
   note(0,850,.16,.14);note(.15,1140,.19,.12);
-  if(n===2){changePhase('complete');finishAt=gameTime+5800;}
 }
 function moveStation(next){
   if(anomalyArrow)anomalyArrow.hidden=true;
-  station=next;focusPlant=chosenSign=null;focusAge=0;
+  station=next;viewed=focusPlant=chosenSign=null;focusAge=0;
   changePhase('walk');
 }
 function confirmHouse(){
-  if(menu||scanning||focusAge<.12)return;
+  if(menu||scanning)return;
+  if(chosenSign && focusAge<.12)return;
   if(chosenSign){moveStation(chosenSign.station);return;}
   const p=focusPlant;
-  if(!p||p.marked||!['teach','inspect'].includes(phase))return;
-  if(p.scanned){if(!p.demo)markPlant(p);return;}
-  scanning=p;p.age=0;scanSound();
+  if(!p || !['teach','inspect','complete'].includes(phase) || (p.demo && p.scanned))return;
+  if(p.scanned && p.extra && !p.marked){markPlant(p);return;}
+  scanning=p;p.age=0;house.scanAt(plantPoint(p));scanSound();
 }
 function progressHouse(dt){
   const dest=phase==='descent'||phase==='teach'||station<0?junctionZ:stationViews[station].z;
@@ -161,36 +168,53 @@ function progressHouse(dt){
       crossSign.point.y+=.48;
       returnSign.point.copy(aim);returnSign.point.y-=.61;
     }
-    changePhase(station<0?'choose':'inspect');
+    changePhase(station<0?'choose':bedsRecorded()===2?'complete':'inspect');
   }
   if(scanning&&scanning.age>=scanDuration){
-    scanning.scanned=true;
-    if(scanning.demo)signalText('上次与本次轮廓吻合 · 铃兰健康');
+    viewed=scanning;scanning.scanned=true;
+    if(scanning.extra){
+      signalText(scanning.finding[0]+(scanning.marked?' · 已归档':' · 再捏归档'));
+      note(0,740,.14,.08);note(.18,990,.18,.08);
+    }else signalText(scanning.kind+'轮廓吻合 · 生长正常');
     scanning=null;
   }
   if(phase==='teach'&&house.teacher.scanned&&house.teacher.age>4.15){
     resetFocus();focusAge=0;changePhase('choose');
   }
-  if(phase==='complete'&&gameTime>=finishAt){finishAt=Infinity;openMenu(true);}
 }
 function observeBeds(dt){
   let candidate=null, best=Infinity;
-  const eye=eyes.point;
-  const sight={x:.5+clamp((eye?.x??.5)-.5,-.35,.35)*.55,y:.5+clamp((eye?.y??.5)-.5,-.3,.3)*.6};
+  const sight=palm && performance.now()-lastHandAt<400 ? palm : null;
   const old=focusPlant||chosenSign;
-  for(const item of [...house.pots,...stationSigns,crossSign,returnSign]){
+  const items=[...house.pots,...stationSigns,crossSign,returnSign];
+  for(const item of items){
     const sign=!!item.point;
-    const allowed=sign?((item===returnSign||item===crossSign)?phase==='inspect':phase==='choose'):
+    const allowed=sign?(item===returnSign?['inspect','complete'].includes(phase):item===crossSign?['inspect','complete'].includes(phase):phase==='choose'):
       item.demo?phase==='teach':station===item.station&&['inspect','complete'].includes(phase);
+    if(!allowed){item.tag.hidden=true;continue;}
     const pt=projectTarget(sign?item.point:plantPoint(item));
-    const visible=allowed&&pt.inside;
+    const visible=item===returnSign||pt.inside;
     item.tag.hidden=!visible;
     if(!visible)continue;
-    item.tag.style.left=pt.x*100+'%';item.tag.style.top=pt.y*100+'%';
-    item.tag.textContent=sign?item.name:item.marked?'✓ '+item.kind:item.scanned?item.kind+' · 已比对':item.kind;
-    const d=Math.hypot((pt.x-sight.x)*innerWidth/innerHeight,pt.y-sight.y);
-    const score=d-(old===item ? .038 : 0);
-    if(!scanning&&score<best && (d<.28||item.demo)){
+    item.tag.classList.toggle('returnControl',item===returnSign);
+    item.tag.style.left=item===returnSign?'68%':pt.x*100+'%';item.tag.style.top=item===returnSign?'8%':pt.y*100+'%';
+    item.tag.classList.toggle('discovery',!!(item.scanned && item.extra));
+    const caption=sign?item.name:item.marked?item.kind+' · 异常已归档':!item.scanned?item.kind:
+      item.extra?item.kind+' · 记录异常':item.kind+' · 正常';
+    if(item.tag.textContent!==caption)item.tag.textContent=caption;
+  }
+  // Position every label first, then read hit boxes in one layout pass.
+  if(sight && !scanning)for(const item of items){
+    if(item.tag.hidden)continue;
+    const bounds=item.tag.getBoundingClientRect();
+    const px=sight.x*innerWidth,py=sight.y*innerHeight;
+    const d=Math.hypot(Math.max(bounds.left-px,0,px-bounds.right),Math.max(bounds.top-py,0,py-bounds.bottom));
+    const plant=!!item.group;
+    const reach=plant?clamp(innerHeight*.035,22,34):18;
+    const keep=old===item;
+    const centerGap=Math.hypot(px-(bounds.left+bounds.right)/2,py-(bounds.top+bounds.bottom)/2);
+    const score=d+centerGap*.02-(keep?8:0);
+    if(score<best && d<reach+(keep?(pinch.target===item?48:14):0)){
       candidate=item;best=score;
     }
   }
@@ -200,7 +224,6 @@ function observeBeds(dt){
   chosenSign=candidate?.point?candidate:null;
   for(const item of [...house.pots,...stationSigns,crossSign,returnSign]){
     item.tag.classList.toggle('selected',item===candidate);
-    if(item===candidate&&item.scanned&&!item.marked&&!item.demo)item.tag.textContent=item.kind+' · 记录异常？';
   }
   showAnomalyHint(dt);
   for(let i=0;i<house.bedLights.length;i++)house.bedLights[i].material.opacity=chosenSign?.station===i ? .95 : .26;
@@ -209,26 +232,28 @@ function observeBeds(dt){
 
 function showAnomalyHint(dt){
   anomalyArrow.hidden=true;
-  for(const plant of house.pots){
-    if(!plant.extra||!plant.scanned||plant.marked)continue;
-    if(phase!=='inspect'||scanning||focusPlant!==plant){
-      plant.away+=dt;
-      if(plant.away>=.5){plant.watch=0;plant.hintPlayed=false;plant.hintAge=-1;}
-      continue;
-    }
-    const revisiting=plant.examined&&plant.away>=.5;
-    plant.away=0;plant.watch+=dt;
-    if(!plant.hintPlayed&&(plant.watch>=5||revisiting)){plant.hintAge=0;plant.hintPlayed=true;}
-    if(plant.watch>=.2)plant.examined=true;
-    if(plant.hintAge<0||plant.hintAge>=2.8)continue;
-    plant.hintAge+=dt;
-    const tip=projectTarget(plant.group.localToWorld(plant.target.clone()));
-    if(!tip.inside)continue;
-    anomalyArrow.style.left=tip.x*100+'%';anomalyArrow.style.top=tip.y*100+'%';
-    anomalyArrow.style.opacity=String(.26+.48*Math.sin(Math.PI*plant.hintAge/1.4)**2);
-    anomalyArrow.hidden=false;
-  }
+  if(!['inspect','complete'].includes(phase)||scanning)return;
+  const plant=focusPlant||viewed;
+  if(!plant?.scanned || !plant.extra || plant.station!==station)return;
+  const tip=projectTarget(plant.group.localToWorld(plant.target.clone()));
+  if(!tip.inside)return;
+  anomalyArrow.style.left=tip.x*100+'%';anomalyArrow.style.top=tip.y*100+'%';
+  anomalyArrow.textContent=plant.finding[0];
+  anomalyArrow.hidden=false;
 }
+function houseTarget(){
+  if(scanning)return null;
+  if(chosenSign)return chosenSign;
+  if(focusPlant?.demo && focusPlant.scanned)return null;
+  return focusPlant;
+}
+function drawPinchRing(now,target){
+  const cursor=$('palm'),done=now<ringFlashUntil;
+  cursor.classList.toggle('onTarget',!!target && !done);
+  cursor.classList.toggle('ringDone',done);
+  cursor.style.setProperty('--sweep',(done?360:360*pinch.progress(now))+'deg');
+}
+
 function scanSound(){
   const tones=[520,810,1160,1250,1390,860];
   [0,.18,.34,.40,.46,.72].forEach((t,i)=>note(t,tones[i],.055,.054,(i-2.5)*.14,.96));
@@ -382,27 +407,38 @@ function silence() {
   currentNotes.clear();
 }
 
-async function makeTracker(kind) {
-  vision ||= import('./vendor/vision_bundle.mjs');
-  const { FilesetResolver, HandLandmarker, FaceLandmarker } = await vision;
-  files ||= FilesetResolver.forVisionTasks('./vendor/wasm');
-  const fileset = await files;
-  const faceKind = kind === 'face';
-  const engine = faceKind ? FaceLandmarker : HandLandmarker;
-  const options = {
-    baseOptions: { modelAssetPath: faceKind ? './vendor/face_landmarker.task' : './vendor/hand_landmarker.task',
-      delegate: faceKind ? 'CPU' : 'GPU' },
-    runningMode: 'VIDEO',
-    minTrackingConfidence: 0.56,
-    ...(faceKind ? { numFaces: 1 } : { numHands: 1, minHandDetectionConfidence: 0.60, minHandPresenceConfidence: 0.60 }),
-  };
-  try {
-    return await engine.createFromOptions(fileset, options);
-  } catch (error) {
-    if (faceKind) throw error;
-    options.baseOptions.delegate = 'CPU';
-    return await engine.createFromOptions(fileset, options);
+let trackingWorker, pendingFrame=false, lastSample=-Infinity;
+let fallbackTracking=false;
+
+async function prepareTracking(){
+  if(trackingWorker || (face && hand))return;
+  if(!fallbackTracking && typeof Worker==='function' && typeof createImageBitmap==='function'){
+    let worker;
+    try{
+      worker=new Worker('./assets/tracking-worker.js');
+      await new Promise((resolve,reject)=>{
+        const timeout=setTimeout(()=>reject(Error('Tracker startup timed out')),20000);
+        worker.onmessage=({data})=>{clearTimeout(timeout);data.ready?resolve():reject(Error(data.error));};
+        worker.onerror=e=>{clearTimeout(timeout);reject(Error(e.message));};
+        worker.postMessage({init:true});
+      });
+      trackingWorker=worker;
+      worker.onerror=useFallback;
+      worker.onmessage=({data})=>{
+        pendingFrame=false;
+        if(data.error){useFallback();return;}
+        if(data.generation===generation && stream && !document.hidden && performance.now()-data.now<400)
+          applyTracking(data.kind,data.points,data.now);
+      };
+      return;
+    }catch(error){worker?.terminate();console.warn('Background tracking unavailable',error);}
   }
+  fallbackTracking=true;
+  [face,hand]=await Promise.all([makeTracker('face'),makeTracker('hand')]);
+}
+function useFallback(){
+  trackingWorker?.terminate();trackingWorker=null;pendingFrame=false;fallbackTracking=true;
+  cameraProblem('正在切换摄像头识别模式…');
 }
 
 function resize() {
@@ -419,7 +455,7 @@ function changePhase(next,now=gameTime) {
   $('mode').textContent=greenhousePhase()?'水下观测舱':['end','daylight'].includes(phase)?'日常视角 · 睡莲湾':'蝙蝠 · 自动回声';
   $('task').textContent=phase==='hunt'&&routeStop>0?'可再捕捉，也可跟随':tasks[phase]||'';
   $('mode').textContent=greenhousePhase()?'温室 · 激光巡检':$('mode').textContent;
-  $('count').textContent=greenhousePhase()?'巡检记录 '+plantProgress()+' / 2':'已捧起 '+foundCount+' 次';
+  $('count').textContent=greenhousePhase()?recordCount():'已捧起 '+foundCount+' 次';
 
 }
 function begin() {
@@ -432,20 +468,13 @@ function begin() {
   ensureAudio();
 }
 function releaseCamera(){
-  generation++;pinch.reset();
+  generation++;pinch.reset();lastGoodFaceAt=lastFaceAt=-Infinity;lastHandAt=-Infinity;eyes.reset();
   stream?.getTracks().forEach(t=>t.stop()); stream=null;video.srcObject=null;
   tracker.reset();eyes.reset();detector.reset();facePoints=handPoints=palm=null;ready=false;
   headYaw=headTilt=0;anchored=false;lastVideo=-1; $('cameraPreview').hidden=true;
 }
 async function startCamera(){
   if(cameraBusy||stream||document.hidden)return;
-  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-    $('startup').textContent = '请把链接复制到电脑 Chrome 或 Edge 的地址栏，再打开这个 HTTPS 网页。';
-    return;
-  }
-  ensureAudio();
-  const startButton = $('startCamera');
-  startButton.disabled = true;
   cameraBusy=true; const request=++generation;
   $('startup').textContent='请允许摄像头访问，然后看向屏幕中央。';
   try{
@@ -453,39 +482,50 @@ async function startCamera(){
     if(request!==generation){acquired.getTracks().forEach(t=>t.stop());return;}
     stream=acquired;video.srcObject=acquired;await video.play();
     $('startup').textContent='正在加载眼部与手掌识别…';
-    const models=await Promise.allSettled([face||makeTracker('face'),hand||makeTracker('hand')]);
-    if(models[0].status==='fulfilled')face=models[0].value;
-    if(models[1].status==='fulfilled')hand=models[1].value;
+    await prepareTracking();
     if(request!==generation)return;
-    if (!face||!hand)throw Error('model');
-    fitPreview(); $('cameraPreview').hidden=false;
-    acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，重新连接后，请点击重试摄像头。');});
-    if(!started){begin();if(saved)openMenu(true);}
+    fitPreview(); $('cameraPreview').hidden=false; startupProblem='';
+    acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，重新连接后将自动继续。');});
+    if(!started){begin();if(new URLSearchParams(location.search).get('start')==='greenhouse')enterHouse();else if(saved)openMenu(true);}
     $('intro').hidden=true;$('experience').hidden=false;
   }catch(e){
-    if(request===generation)cameraProblem(e.name==='NotAllowedError'?'请在浏览器地址栏允许摄像头访问，授权后请点击重试摄像头。':e.name==='NotFoundError'?'请连接摄像头，连接后请点击重试摄像头。':e.name==='NotReadableError'?'摄像头被占用，请关闭其他占用它的程序。':'识别暂时不可用，请点击重试摄像头。');
-  }finally{cameraBusy=false;startButton.disabled=false;}
+    if(request===generation)cameraProblem(e.name==='NotAllowedError'?'请在浏览器地址栏允许摄像头访问，授权后将自动进入。':e.name==='NotFoundError'?'请连接摄像头，连接后会自动进入。':e.name==='NotReadableError'?'摄像头被占用，请关闭其他占用它的程序。':'识别暂时不可用，正在重新连接…');
+  }finally{cameraBusy=false;}
 }
 function cameraProblem(text){
-  releaseCamera();
-  $('startCamera').textContent='重试摄像头';
+  releaseCamera();startupProblem=text;retryAt=performance.now()+6000;
   $('startup').textContent=text;$('intro').hidden=false;$('experience').hidden=true;
 }
 document.addEventListener('visibilitychange',()=>{
   lastFrame=performance.now();pinch.reset();detector.reset();eyes.reset();tracker.reset();
-  palm=null;ready=false;anchored=false;facePoints=null;lastFaceAt=lastHandAt=-Infinity;
-  if(document.hidden){silence();audio?.suspend();}else if(started && !menu){ensureAudio();}
+  palm=null;ready=false;anchored=false;facePoints=null;lastGoodFaceAt=lastFaceAt=lastHandAt=-Infinity;
+  if(document.hidden){silence();audio?.suspend();}else{if(started)ensureAudio();if(!stream)startCamera();}
 });
-window.addEventListener('pagehide',()=>{releaseCamera();face?.close();hand?.close();audio?.close();});
+window.addEventListener('pagehide',()=>{releaseCamera();trackingWorker?.terminate();face?.close();hand?.close();audio?.close();});
 function palmCenter(joints){
   return [0,5,9,13,17].reduce((s,i)=>({x:s.x+(1-joints[i].x)/5,y:s.y+joints[i].y/5}),{x:0,y:0});
 }
 function distanceTo(point){return screen&&point?Math.hypot((point.x-screen.x)*innerWidth,(point.y-screen.y)*innerHeight):Infinity;}
 function track(now){
-  if(!stream||cameraBusy||video.readyState<2||video.currentTime===lastVideo)return;
-  lastVideo=video.currentTime;faceNext=!faceNext;
-  if(faceNext){
-    facePoints=face.detectForVideo(video,now).faceLandmarks[0];
+  if(!stream||cameraBusy||pendingFrame||video.readyState<2||video.currentTime===lastVideo)return;
+  if(now-lastSample<(trackingWorker?32:60))return;
+  lastSample=now;lastVideo=video.currentTime;faceNext=!faceNext;
+  const kind=faceNext?'face':'hand';
+  if(trackingWorker){
+    const request=generation, worker=trackingWorker;
+    pendingFrame=true;
+    createImageBitmap(video).then(bitmap=>{
+      if(request!==generation || document.hidden){bitmap.close();pendingFrame=false;return;}
+      worker.postMessage({kind,bitmap,now,generation:request},[bitmap]);
+    }).catch(()=>{if(worker===trackingWorker)useFallback();});
+    return;
+  }
+  const result=(faceNext?face:hand).detectForVideo(video,now);
+  applyTracking(kind,(faceNext?result.faceLandmarks:result.landmarks)[0],now);
+}
+function applyTracking(kind,points,now){
+  if(kind==='face'){
+    facePoints=points;
     tracker.update(facePoints,video.videoWidth/video.videoHeight,now);eyes.update(facePoints);
     if(facePoints && tracker.neutral){
       const c=eyeCenter(facePoints),w=Math.hypot(c.eyes[3].x-c.eyes[0].x,(c.eyes[3].y-c.eyes[0].y)*video.videoHeight/video.videoWidth);
@@ -493,13 +533,24 @@ function track(now){
       const relativeY=(facePoints[1].y-c.y)/w;
       if(!anchored){tracker.noseY=relativeY;anchored=true;}
       headTilt=clamp((tracker.noseY-relativeY)*1.65,-.48,.48);
-      lastFaceAt=now;
+      lastFaceAt=lastGoodFaceAt=now;
     } else if(!facePoints){lastFaceAt=-Infinity;}
   }else{
-    handPoints=hand.detectForVideo(video,now).landmarks[0];
-    palm=handPoints?palmCenter(handPoints):null;lastHandAt=now;
+    handPoints=points;
+    const nextPalm=handPoints?palmCenter(handPoints):null;
+    if(greenhousePhase() && palm && nextPalm && now-lastHandAt<250){
+      const weight=1-Math.exp(-(now-lastHandAt)/55);
+      palm.x+=(nextPalm.x-palm.x)*weight;
+      palm.y+=(nextPalm.y-palm.y)*weight;
+    }else palm=nextPalm;
+    lastHandAt=now;
     const aspect=video.videoWidth/video.videoHeight;
-    const pressed=pinch.update(handPoints,aspect,now);
+    const indoors=greenhousePhase();
+    const control=controlAt(palm);
+    if(indoors && !menu && !control && now-lastFaceAt<420)observeBeds(0);
+    const target=control || (!menu && indoors?houseTarget():null);
+    const pressed=pinch.update(handPoints,aspect,now,now-lastFaceAt<420?target:null,indoors?320:55);
+    if(pressed && indoors)ringFlashUntil=performance.now()+240;
     if(menuHand(now,pressed)){drawPreview();return;}
     if(now-lastFaceAt>=420){ready=false;return;}
     if(greenhousePhase()){if(pressed)confirmHouse();drawPreview();return;}
@@ -609,6 +660,7 @@ function projectTarget(target){
   const scale=Math.max(Math.abs(dx)/.42,Math.abs(dy)/.36,.001);
   return {x:.5+dx/scale,y:.5+dy/scale,inside,angle:Math.atan2(dy*innerHeight,dx*innerWidth)*180/Math.PI};
 }
+let lastMapAt=-Infinity;
 function drawMap(){
   const ctx=$('map').getContext('2d');
   const at=v=>[13+(12-v.z)*5.98,76+v.x*6.1];
@@ -632,6 +684,17 @@ function drawMap(){
   ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
 }
 
+let drawnRecord=null;
+function showRecord(){
+  const p=focusPlant||viewed;
+  const visible=['teach','inspect','complete'].includes(phase) && !scanning && p?.scanned && !chosenSign;
+  $('scanRecord').hidden=!visible;
+  if(!visible || drawnRecord===p)return;
+  drawnRecord=p;
+  $('scanName').textContent=p.kind+' · '+(p.finding?.[0]||'轮廓吻合');
+  $('scanDetail').textContent=p.finding?.[1]||'两次记录的轮廓一致。';
+  p.drawComparison($('scanPair'));
+}
 function drawUI(now,dt,present){
   const marker=$('marker'),handVisible=present&&palm&&now-lastHandAt<400;
   $('tracking').textContent=present?'':facePoints?'请看屏幕中央，保持一瞬':'请让脸回到画面中';
@@ -642,12 +705,14 @@ function drawUI(now,dt,present){
   $('palm').textContent=phase==='found'?'':'✧';
   $('palmStatus').textContent=phase==='found'?'掌心有光':handVisible?'已看到手':'待伸手';
   marker.hidden=true;
-  $('aimDot').hidden=!present||!greenhousePhase()||['descent','walk','complete'].includes(phase);
+  $('aimDot').hidden=true;
   if(!present){
     if(anomalyArrow)anomalyArrow.hidden=true;
     focusPlant=chosenSign=null;focusAge=0;return;
   }
   if(greenhousePhase())observeBeds(dt);
+  showRecord();
+  drawPinchRing(now,greenhousePhase() && (controlAt(palm)||houseTarget()));
   const target=chosenSign?.point||(focusPlant?plantPoint(focusPlant):insect);
   screen=projectTarget(target);
   let hint='';
@@ -656,16 +721,16 @@ function drawUI(now,dt,present){
     routeStop===0?'伸手靠近光点，再轻轻合手':'再捧一次，或放下手跟它走';
   if(phase==='found')hint='你捧住了它 · 张开手，让它带路';
   if(phase==='flight')hint='跟着光迹，听回声掠过湖面';
-  if(phase==='end'||phase==='descent')hint='跟着最后这束光，沿坡道下潜';
-  if(phase==='teach')hint=house.teacher.scanned?'轮廓重合 · 铃兰和上次一样':scanning?'看枝脉的走向 · 灰白是上次，青绿是现在':'看向铃兰，拇指和食指轻捏一下';
-  if(phase==='choose')hint=chosenSign?'轻捏前往'+chosenSign.name:'轻轻转头，选一处花台';
-  if(phase==='walk')hint=station<0?'返回岔口':'前往'+stationNames[station];
-  if(phase==='inspect'){
-    hint=scanning?'沿枝脉比对 · 灰白是上次，青绿是现在':chosenSign?(chosenSign===crossSign?'轻捏，直接去对面'+stationNames[crossSign.station]:'轻捏回到岔口'):
-      !focusPlant?'看向一株植物，或选对面花台的路牌':focusPlant.marked?'这处发现已经记录':
-      focusPlant.scanned?'有不同？轻捏标记 · 也可继续观察':'轻捏扫描这株'+focusPlant.kind;
+  if(phase==='end'||phase==='descent')hint='沿着萤光，跟随步道下潜';
+  if(phase==='teach')hint=house.teacher.scanned?'轮廓重合 · 铃兰和上次一样':scanning?'看枝脉的走向 · 灰白是上次，青绿是现在':focusPlant===house.teacher?'轻捏并保持，光环合拢即扫描':'左手或右手都可以 · 把光标移近「铃兰」';
+  if(phase==='choose')hint=chosenSign?'轻捏前往'+chosenSign.name:'选择花台';
+  if(phase==='walk')hint=station<0?'返回过道':'前往'+stationNames[station];
+  if(['inspect','complete'].includes(phase)){
+    if(scanning)hint='正在比对 · '+scanning.kind;
+    else if(chosenSign)hint='轻捏'+chosenSign.name;
+    else if(focusPlant)hint=focusPlant.scanned && focusPlant.extra && !focusPlant.marked?'再捏归档':'轻捏'+(focusPlant.scanned?'重看':'观察')+focusPlant.kind;
+    else hint=phase==='complete'?'自由探索 · 轻捏植物观察':'轻捏植物观察';
   }
-  if(phase==='complete')hint='两处异常已记录 · 巡检完成';
   if(gameTime<noteUntil)hint=feedback;
   $('guideText').textContent=hint;
   $('guideText').classList.toggle('pinchDemo',phase==='teach'&&!scanning&&!house.teacher.scanned);
@@ -687,7 +752,7 @@ function drawUI(now,dt,present){
     $('aimDot').style.left=(.5+clamp((eye?.x??.5)-.5,-.35,.35)*.55)*100+'%';
     $('aimDot').style.top=(.5+clamp((eye?.y??.5)-.5,-.3,.3)*.6)*100+'%';
   }
-  drawMap();
+  if(now-lastMapAt>=100){drawMap();lastMapAt=now;}
 }
 
 
@@ -696,17 +761,35 @@ function frame(now){
   const elapsedFrame=now-lastFrame;
   const dt=Math.min(.08,elapsedFrame/1000);lastFrame=now;
   if(document.hidden)return;
-  try{track(now);}catch(error){console.warn(error);cameraProblem('识别中断，请点击重试摄像头。');}
+  if(startupProblem && !stream && !cameraBusy && now>=retryAt)startCamera();
+  try{track(now);}catch(error){console.warn(error);cameraProblem('识别中断，正在重新连接…');}
   const present=started && stream && !cameraBusy && tracker.status(now)==='ready' && now-lastFaceAt<420;
   const pos=tracker.step(dt,now);
   if(menu){
+    drawPinchRing(now,controlAt(palm));
     $('palm').hidden=!present||!palm;
     if(palm){$('palm').style.left=palm.x*100+'%';$('palm').style.top=palm.y*100+'%';}
     return;
   }
-  if(present){gameTime+=dt*1000;phaseTime+=dt*1000;advance(dt);}
-  yaw+=(turnTo+headYaw-yaw)*(1-Math.exp(-dt*7));pitch+=(tiltTo+headTilt-pitch)*(1-Math.exp(-dt*7));
-  windowView.viewFrom(pos,yaw,pitch,explorer);camera.updateMatrixWorld();
+  const inTransit=phase==='walk'||phase==='descent';
+  const continueWalking=inTransit && started && stream && !cameraBusy && now-lastGoodFaceAt<900;
+  if(present||continueWalking){gameTime+=dt*1000;phaseTime+=dt*1000;advance(dt);}
+  const indoors=greenhousePhase();
+  const gaze=indoors?eyes.point:null;
+  const lookYaw=quietLook(headYaw,.10,1.45)+quietLook(.5-(gaze?.x??.5),.09,.46)*1.55;
+  const lookPitch=quietLook(headTilt,.055,.48)+quietLook(.5-(gaze?.y??.5),.07,.45)*.95;
+  const aiming=indoors && focusPlant && !scanning && ['teach','inspect','complete'].includes(phase) &&
+    palm && now-lastHandAt<250;
+  // Give a newly highlighted name a still moment for the pinch. Deliberate
+  // looking resumes gradually even if the hand stays over the same label.
+  const settle=aiming && (focusAge<.65 || pinch.target===focusPlant);
+  if(!settle){
+    yaw=followAngle(yaw,turnTo+lookYaw,dt,aiming?.45:1.25);
+    pitch=followAngle(pitch,tiltTo+lookPitch,dt,aiming?.32:.85);
+    const weight=1-Math.exp(-dt*(aiming?2.2:5));
+    viewShift.lerp(desiredShift.copy(pos).multiplyScalar(indoors?.48:.75),weight);
+  }
+  windowView.viewFrom(viewShift,yaw,pitch,explorer);camera.updateMatrixWorld();
 
   const listening=['hunt','flight','found'].includes(phase);
   if(present && listening && phase!=='found' && gameTime>=nextEcho)autoEcho();
@@ -726,4 +809,4 @@ function frame(now){
 }
 resize();
 requestAnimationFrame(frame);
-$('startCamera').addEventListener('click', startCamera);
+startCamera();

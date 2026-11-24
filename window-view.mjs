@@ -79,6 +79,18 @@ export class HeadWindow {
   }
 }
 
+// Calibrated head angles and normalized gaze each have their own quiet zone.
+// The curve preserves the outer range so end pots can still be brought into view.
+export function quietLook(value, deadZone, limit){
+  const t=THREE.MathUtils.clamp((Math.abs(value)-deadZone)/(limit-deadZone),0,1);
+  return Math.sign(value)*limit*t*(.40+.60*t);
+}
+
+export function followAngle(current, target, dt, maxSpeed){
+  const step=(target-current)*(1-Math.exp(-dt*4));
+  return current+THREE.MathUtils.clamp(step,-maxSpeed*dt,maxSpeed*dt);
+}
+
 export class WindowProjection {
   constructor(camera, fov = 46) {
     this.camera = camera;

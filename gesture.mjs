@@ -62,18 +62,29 @@ export class ReachGrab {
 }
 // Pinch is edge-triggered. A fresh, visible release rearms it even after tracking loss.
 export class Pinch {
-  reset(){this.armed=false;this.since=null;this.last=null;}
+  reset(){this.armed=false;this.since=null;this.last=null;this.target=null;this.duration=55;}
   constructor(){this.reset();}
-  update(hand,aspect,now){
-    if(!hand || (this.last!==null && now-this.last>400))this.reset();
+  progress(now){
+    if(this.since===null || now-this.last>250)return 0;
+    return clamp((now-this.since)/this.duration,0,.98);
+  }
+  update(hand,aspect,now,target=true,duration=55){
+    if(!hand || (this.last!==null && now-this.last>250))this.reset();
     if(!hand)return false;
     this.last=now;
     const dist=(a,b)=>Math.hypot((hand[a].x-hand[b].x)*aspect,hand[a].y-hand[b].y);
     const ratio=dist(4,8)/Math.max(.015,dist(5,17));
-    if(ratio>.52){this.armed=true;this.since=null;return false;}
-    if(!this.armed||ratio>.34){this.since=null;return false;}
-    this.since??=now;
-    if(now-this.since<55)return false;
-    this.armed=false;this.since=null;return true;
+    if(ratio>.55){this.armed=true;this.since=null;this.target=null;return false;}
+    if(!this.armed)return false;
+    if(this.since!==null && (this.target!==target || ratio>.49)){
+      this.armed=false;this.since=null;this.target=null;return false;
+    }
+    if(this.since===null){
+      if(ratio>.40)return false;
+      if(!target){this.armed=false;return false;}
+      this.since=now;this.target=target;this.duration=duration;
+    }
+    if(now-this.since<duration)return false;
+    this.reset();this.last=now;return true;
   }
 }

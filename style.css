@@ -26,12 +26,6 @@ h1{font:400 58px SimSun,serif;margin:0}.privacy,.camera-legend,#count{font-size:
 .chapterAction.locked{opacity:.45}.plantLabel{position:fixed;transform:translate(-50%,38px);text-shadow:0 1px 4px #000;background:#132c32d9;padding:3px 7px;border-radius:6px;font-size:11px;pointer-events:none}
 #chapterMenu{position:fixed;inset:0;background:#101d2ac7;display:grid;place-items:center;z-index:10}.chapterPanel{width:min(480px,88vw);padding:24px;background:#172d35;border:1px solid #bedaca5c;border-radius:18px;text-align:center}.chapterPanel h2{font:normal 30px SimSun,serif;margin:0}.chapterPanel p{font-size:13px;color:#bcd0c9}.chapterCards{display:flex;gap:12px;margin:15px 0}.chapterCard{flex:1}.thumb{height:65px;border-radius:8px;margin-bottom:4px}.bay{background:center/cover url('./assets/sleeping-lotus.png')}.glass{background:radial-gradient(ellipse at bottom,#6e9e87,#244e54 70%);color:#acd5b7;font:52px Georgia}#palm{z-index:12}
 
-.intro p{line-height:1.55}
-#startup{min-height:2.8em;color:#d3ebe1;font-size:14px}
-#startCamera{border:1px solid #b5dfcf;border-radius:8px;background:#c0ead9;color:#18342e;font:inherit;font-weight:650;padding:12px 20px;cursor:pointer}
-#startCamera:disabled{opacity:.55;cursor:wait}
-#startCamera:focus-visible{outline:2px solid #fff;outline-offset:4px}
-
 #guideText,#echoStatus{position:fixed;left:50%;transform:translateX(-50%);pointer-events:none;text-align:center}
 #guideText{bottom:7vh;padding:9px 17px;color:#fff6de;background:#152c33ed;border:1px solid #c1ded34a;border-radius:18px;font:500 clamp(13px,1.18vw,18px)/1.5 "Microsoft YaHei UI",sans-serif;max-width:49vw;z-index:3}
 #echoStatus{top:12vh;font-size:12px;color:#c5f4ee;text-shadow:0 1px 5px #071b23}
@@ -53,6 +47,31 @@ h1{font:400 58px SimSun,serif;margin:0}.privacy,.camera-legend,#count{font-size:
 @media(max-width:750px){#guideText{bottom:24vh;max-width:85vw;width:max-content}}
 
 
-.anomalyArrow{position:fixed;pointer-events:none;width:clamp(32px,3.6vw,56px);height:clamp(38px,4.2vw,64px);transform:translate(-50%,-103%) rotate(-20deg);transform-origin:50% 100%;z-index:4;filter:drop-shadow(0 1px 3px #193c40)}
-.anomalyArrow::after{content:'';display:block;width:100%;height:100%;background:#ffedc3;clip-path:polygon(39% 0,61% 0,63% 52%,91% 46%,50% 100%,9% 46%,37% 52%)}
+/* A sample annotation follows the tip of the tissue that changed. */
+.anomalyArrow{position:fixed;z-index:4;pointer-events:none;transform:translate(15px,-100%);padding:4px 9px;color:#ffe7bd;background:#35251bed;border:1px solid #f3b874;border-radius:12px;font-size:clamp(12px,1vw,16px);white-space:nowrap}
+.anomalyArrow::before{content:"";position:absolute;left:-23px;bottom:-8px;width:14px;height:14px;border:2px solid #ffbf73;border-radius:50%;box-shadow:0 0 12px #ffae56}
 .anomalyArrow[hidden]{display:none}
+
+.plantLabel.returnControl{transform:translate(-50%,0);padding:10px 16px;border-color:#e7c48a;background:#25313eee;z-index:5}
+
+/* A brighter leading mote and a fading trail point toward the offscreen guide. */
+#arrow{width:46px;height:24px;left:-23px;top:-12px;background:
+  radial-gradient(circle at 84% 50%,#fff7d9 0 2px,#f5ca7a99 3px,transparent 7px),
+  radial-gradient(circle at 58% 54%,#ffe8aabb 0 2px,transparent 4px),
+  radial-gradient(circle at 36% 42%,#ffdb9980 0 1.5px,transparent 3px),
+  radial-gradient(circle at 15% 49%,#edc88566 0 1px,transparent 3px);
+  animation:mote-glow 1.8s ease-in-out infinite alternate}
+@keyframes mote-glow{to{opacity:.58}}
+#palm.onTarget,#palm.ringDone{color:#fff5d6;background:#26372d99;border-color:#ffe8b2}
+#palm.onTarget::before{content:"";position:absolute;inset:-7px;border:1px solid #ffe5a5aa;border-radius:50%;animation:target-breathe 1.25s ease-in-out infinite alternate}
+#palm.onTarget::after,#palm.ringDone::after{content:"";position:absolute;inset:-6px;border-radius:50%;background:conic-gradient(from 0deg,#ffda87 var(--sweep,0deg),#534d3c99 0);mask:radial-gradient(closest-side,transparent calc(100% - 3px),black calc(100% - 2px))}
+@keyframes target-breathe{to{box-shadow:0 0 9px 2px #ffe3a277;opacity:.55}}
+#palm.ringDone::after{background:#aef6db;box-shadow:0 0 10px #aef6db}
+.plantLabel{border-radius:12px;padding:5px 10px}
+.plantLabel.discovery{border:1px solid #ffc879;color:#ffe0ae;background:#402b1bf2}
+.plantLabel.discovery.selected{background:#ffe0aa;color:#352719}
+@media(prefers-reduced-motion:reduce){#arrow,#palm.onTarget::before{animation:none}}
+
+#scanRecord{position:fixed;top:11vh;left:3vw;width:clamp(172px,20vw,265px);padding:12px;border:1px solid #8ab6a377;border-radius:12px;background:#15262ded;color:#e5efe9;pointer-events:none;z-index:2}
+#scanName{font-size:14px}.readings{display:flex;text-align:center;font-size:11px;color:#bdccc6;margin-top:7px}.readings span{flex:1}#scanPair{display:block;width:100%;height:auto;background:linear-gradient(to right,transparent 49.7%,#80988c55 50%,transparent 50.3%)}#scanDetail{margin:5px 0 0;font-size:12px;line-height:1.5}
+@media(max-height:520px){#scanRecord{top:3vh;left:21vw;width:174px;padding:6px}#scanPair{height:42px;object-fit:contain}}

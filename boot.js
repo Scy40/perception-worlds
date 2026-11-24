@@ -1,10 +1,6 @@
-const statusLine = document.getElementById('startup');
-const startButton = document.getElementById('startCamera');
-
-import('./app.js').then(() => {
-  statusLine.textContent = '点击开始，浏览器询问时请选择「允许」。';
-  startButton.disabled = false;
-}).catch(error => {
+const statusLine=document.getElementById('startup');
+if (location.protocol==='file:') statusLine.textContent='请解压整个工程，双击「启动体验.cmd」进入睡莲湾。';
+else import('./app.js').catch(error=>{
   console.error(error);
-  statusLine.textContent = '场景未能加载。请刷新页面，或用电脑上的 Chrome 或 Edge 打开。';
+  statusLine.textContent='场景未能加载。请确认已完整解压工程，并使用支持 WebGL 的 Edge 打开。';
 });
