@@ -60,3 +60,20 @@ export class ReachGrab {
     return {action,open:straight>=3,ready:this.opened && this.reached && now-this.nearAt<=420};
   }
 }
+// Pinch is edge-triggered. A fresh, visible release rearms it even after tracking loss.
+export class Pinch {
+  reset(){this.armed=false;this.since=null;this.last=null;}
+  constructor(){this.reset();}
+  update(hand,aspect,now){
+    if(!hand || (this.last!==null && now-this.last>400))this.reset();
+    if(!hand)return false;
+    this.last=now;
+    const dist=(a,b)=>Math.hypot((hand[a].x-hand[b].x)*aspect,hand[a].y-hand[b].y);
+    const ratio=dist(4,8)/Math.max(.015,dist(5,17));
+    if(ratio>.52){this.armed=true;this.since=null;return false;}
+    if(!this.armed||ratio>.34){this.since=null;return false;}
+    this.since??=now;
+    if(now-this.since<55)return false;
+    this.armed=false;this.since=null;return true;
+  }
+}

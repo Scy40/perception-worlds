@@ -997,21 +997,26 @@ export async function makePond() {
     const daylight = (guidePhase==='daylight' || guidePhase==='end' || guidePhase==='idle' ? visible : 0) * (1 - amount);
     const searching = ['hunt','found','flight'].includes(guidePhase);
     const returnVisible = searching || (confirmed && response > 0);
-    const intensity = Math.max(daylight, searching ? .56 : 0, returnVisible ? response : 0);
+    const perched=guidePhase==='hunt'&&phaseAge>=.9;
+    let intensity=daylight;
+    if(guidePhase==='hunt')intensity=perched?.93+.07*Math.sin(seconds*3):.48+.15*Math.cos(seconds*7);
+    if(guidePhase==='flight')intensity=.44+.14*Math.sin(seconds*7)+.20*THREE.MathUtils.smoothstep(phaseAge,3.3,4.4);
+    if(guidePhase==='descent')intensity=.70+.08*Math.sin(seconds*5);
+    if(guidePhase==='teach')intensity=.48*(1-THREE.MathUtils.smoothstep(phaseAge,0,2.4));
     bug.visible = intensity > 0.014;
-    returnAccent.visible = response > 0.02;
+    returnAccent.visible = searching && guidePhase!=='found' && firstReturn>.05;
     if (bug.visible) {
       bug.position.copy(returnVisible && detected && !guidePhase ? detected.point : insect);
       bug.rotation.set(0.25 + Math.sin(seconds * 3.6) * 0.12, seconds * 1.6, Math.sin(seconds * 2.8) * 0.18);
-      for (const wing of wings) wing.rotation.z = Math.sin(seconds * 64) * 0.51;
-      abdomen.material.color.set(returnVisible ? '#edf7ff' : '#ffcd69');
+      for (const wing of wings) wing.rotation.z = Math.sin(seconds * (perched?6:64)) * (perched?.06:.51);
+      abdomen.material.color.set(perched?'#ffdf89':'#f9ce77');
       thorax.material.color.set(returnVisible ? '#bedfff' : '#784b43');
-      glow.material.color.set(returnVisible ? '#95d6ff' : '#ffab50');
+      glow.material.color.set(perched?'#ffc45e':'#efd096');
       abdomen.material.depthTest = thorax.material.depthTest = wingMaterial.depthTest = glow.material.depthTest = !returnVisible;
       abdomen.material.opacity = thorax.material.opacity = intensity;
       wingMaterial.opacity = intensity * 0.91;
       glow.material.opacity = intensity * (returnVisible ? 0.57 : 0.74);
-      glow.scale.setScalar(0.68 + response * .26 + Math.sin(seconds * 7) * 0.04);
+      glow.scale.setScalar(perched?.86+.07*Math.cos(seconds*3):.48+intensity*.18);
     }
     if (returnAccent.visible) {
       const beat = guidePhase ? phaseAge : elapsed;
@@ -1029,6 +1034,7 @@ export async function makePond() {
     }
   }
 
+  bug.traverse(o=>o.layers.enable(1));
   bug.visible = returnAccent.visible = staticLines.visible = livingLines.visible = false;
   return { scene, update, info, reflect, canSee, steer, targetCount: TARGETS.length };
 }
