@@ -2,7 +2,8 @@ import * as T from './vendor/three.module.js';
 
 const V=(x,y,z)=>new T.Vector3(x,y,z);
 const clamp=T.MathUtils.clamp, tau=2*Math.PI;
-export const pathX=()=>1.45;
+export const scanDuration=2.8;
+export const pathX=z=>.82+.31*Math.sin((z+20)*.43);
 export const floorAt=z=>-1.27-4.05*T.MathUtils.smoothstep(-z,17.7,27);
 export const samples=[-29.7,-34.8,-39.2].map(z=>V(-.26,-4.12,z));
 export const flower=samples[0];
@@ -37,7 +38,7 @@ export function makeCabin(scene){
       sh.vertexShader='varying vec3 waterPos;\n'+sh.vertexShader.replace('#include <worldpos_vertex>',
         '#include <worldpos_vertex>\nvec4 waterVertex=vec4(transformed,1.);\n#ifdef USE_INSTANCING\nwaterVertex=instanceMatrix*waterVertex;\n#endif\nwaterPos=(modelMatrix*waterVertex).xyz;');
       sh.fragmentShader='varying vec3 waterPos; uniform float waterTime;\n'+caustic+'\n'+sh.fragmentShader.replace('#include <opaque_fragment>',
-        `outgoingLight+=vec3(.065,.24,.25)*lattice(waterPos.xz+waterPos.y*vec2(.43,.35),waterTime)*smoothstep(1.,5.,-waterPos.y);\n#include <opaque_fragment>`);
+        `outgoingLight+=vec3(.13,.31,.28)*lattice(waterPos.xz+waterPos.y*vec2(.43,.35),waterTime)*smoothstep(1.,5.,-waterPos.y);\n#include <opaque_fragment>`);
     };return mat;
   }
   const alloy=finish(0x89a8ab,.42), enamel=finish(0x254653,.3), bronze=finish(0xb19876,.45), deck=finish(0x809ca0,.16);
@@ -81,7 +82,7 @@ export function makeCabin(scene){
   }
   for(const t of [.12,.5,.87])tube(Array.from({length:23},(_,i)=>arch(-17.7-i*1.1,t)),.036,alloy);
   for(const x of [.57,2.42]){
-    tube(Array.from({length:20},(_,i)=>[x,floorAt(-17-i*1.28)+.018,-17-i*1.28]),.016,bronze);
+    tube(Array.from({length:20},(_,i)=>[pathX(-17-i*1.28)+x-1.45,floorAt(-17-i*1.28)+.018,-17-i*1.28]),.016,bronze);
     for(let i=0;i<9;i++){const z=-18.6-i*.91;box(x,floorAt(z)+.08,z,.06,.12,.26,bronze);}
   }
   const lamp=new T.MeshBasicMaterial({color:0x836e45});
@@ -89,39 +90,46 @@ export function makeCabin(scene){
   mesh(new T.SphereGeometry(.079,16,12).translate(...pilotLamp.toArray()),lamp);
   // The pressure bulkhead, seam bolts and three specimen cradles stay fixed across readings.
   box(.76,-3.8,-42,5.2,3.4,.19,enamel);
-  box(-.26,-4.88,-34.5,1.8,.22,14.1,enamel,170);
-  for(const dx of [-.88,.88])tube([[-.26+dx,-4.82,-27.5],[-.26+dx,-4.82,-41.5]],.037,bronze);
+
   const scanRailY=-2.58;
   for(const x of [.20,.44])tube([[x,scanRailY,-27.5],[x,scanRailY,-41]],.039,alloy);
 // Six pots share one scan instrument. Historical samples omit only the new tissue.
   const soil=finish(0x344e48), fern=finish(0x65af85), midrib=finish(0xb5cc89), bell=finish(0xf3ded5);
   const pots=[];
   function specimen(kind,extra,demo=false){
-    const group=new T.Group(), ordinary=[],addition=[];
+    const group=new T.Group(), paths=[];
     room.add(group);
     const target=V(0,.47,0);
-    function part(geometry,mat,newGrowth=false){
-      group.add(new T.Mesh(geometry,mat));
-      const vertices=geometry.attributes.position,idx=geometry.index;
-      const size=idx?idx.count:vertices.count;
-      const a=V(),b=V(),c=V(),ab=V(),ac=V();
-      for(let j=0;j<size;j+=3){
-        [a,b,c].forEach((v,k)=>v.fromBufferAttribute(vertices,idx?idx.getX(j+k):j+k));
-        ab.subVectors(b,a);ac.subVectors(c,a);
-        const count=Math.ceil(V().crossVectors(ab,ac).length()*1500);
-        for(let k=0;k<count;k++){
-          let u=rand(),v=rand();if(u+v>1){u=1-u;v=1-v;}
-          const pt=a.clone().addScaledVector(ab,u).addScaledVector(ac,v);
-          (newGrowth?addition:ordinary).push(...pt.toArray());
-        }
+    function part(geometry,material){group.add(new T.Mesh(geometry,material));}
+
+    // Each branch picks up the pulse where it joins an older stem.
+    function trace(curve,newGrowth=false){
+      const points=curve.getSpacedPoints(Math.max(8,Math.ceil(curve.getLength()*86)));
+      let join=0, nearest=Infinity;
+      for(const path of paths)for(const sample of path.samples){
+        const gap=sample.point.distanceTo(points[0]);
+        if(gap<nearest){nearest=gap;join=sample.distance+gap;}
       }
+      if(points[0].y<.05)join=0;
+      let distance=join;
+      const samples=points.map((point,i)=>{
+        if(i)distance+=point.distanceTo(points[i-1]);
+        return {point,distance};
+      });
+      paths.push({samples,newGrowth});
+      if(newGrowth)target.copy(points[points.length-1]);
     }
     function stem(pts,r,m=midrib,newGrowth=false){
-      part(new T.TubeGeometry(new T.CatmullRomCurve3(pts.map(p=>V(...p))),32,r,7,false),m,newGrowth);
+      const curve=new T.CatmullRomCurve3(pts.map(p=>V(...p)));
+      part(new T.TubeGeometry(curve,48,r,7,false),m);trace(curve,newGrowth);
     }
     function blade(x,y,dx,dy,w,newGrowth=false,z=.02){
-      part(sheet(16,4,(t,s)=>{const side=(s-.5)*2*w*Math.pow(Math.sin(Math.PI*t),.62);
-        return [x+dx*t+side,y+dy*t-side*dx*.55,z+.085*Math.sin(t*Math.PI)+.024*(1-Math.abs(s*2-1))];}),fern,newGrowth);
+      function surface(t,s){
+        const side=(s-.5)*2*w*Math.pow(Math.sin(Math.PI*t),.62);
+        return [x+dx*t+side,y+dy*t-side*dx*.55,z+.085*Math.sin(t*Math.PI)+.024*(1-Math.abs(s*2-1))];
+      }
+      part(sheet(16,4,surface),fern);
+      trace(new T.CatmullRomCurve3(Array.from({length:21},(_,i)=>V(...surface(i/20,.5)))),newGrowth);
     }
     if(kind==='鹿角蕨'){
       for(const side of [-1,1]){
@@ -129,63 +137,167 @@ export function makeCabin(scene){
         blade(side*.17,.42,side*.14,.26,.067);
         blade(side*.17,.42,-side*.065,.32,.052);
       }
-      if(extra){blade(.18,.43,.27,.10,.05,true);target.set(.37,.52,.06);}
+      if(extra){blade(.18,.43,.27,.10,.05,true);}
     }else if(kind==='卷叶蕨'){
       const curl=(x,y,sign)=>Array.from({length:44},(_,i)=>{const t=i/43,a=t*5.75,r=.13*(1-.65*t);return [x+sign*r*Math.sin(a),y+r*(1-Math.cos(a)),.025];});
       stem([[0,0,0],[-.07,.29,0],[-.08,.56,0],...curl(-.08,.64,1)],.026);
       for(const side of [-1,1])blade(0,.02,side*.19,.28,.055);
-      if(extra){stem([[-.07,.29,0],[.08,.38,.02],[.19,.49,.025],...curl(.20,.53,1)],.027,midrib,true);target.set(.22,.60,.03);}
+      if(extra){stem([[-.07,.29,0],[.08,.38,.02],[.19,.49,.025],...curl(.20,.53,1)],.027,midrib,true);}
     }else{
       for(let j=0;j<2;j++)blade(0,.01,j?.16:-.15,.42,.055);
       stem([[0,0,0],[-.05,.36,0],[.01,.64,0],[.12,.73,0]],.017);
       for(let j=0;j<4;j++){
         const x=.03+j*.03,y=.41+j*.09;
         stem([[0,y,0],[x+.07,y+.04,0],[x+.09,y+.01,0]],.009);
+        trace(new T.LineCurve3(V(x+.09,y+.01,0),V(x+.09,y-.082,.012)));
         part(sheet(10,20,(t,s)=>{const a=s*tau,r=.045*(.18+Math.sin(t*1.9)+.28*t**4);return [x+.09+r*Math.cos(a),y-.082*t+.007*t**3*Math.cos(6*a),r*Math.sin(a)];}),bell);
       }
     }
     const tray=new T.Mesh(new T.CylinderGeometry(.39,.30,.16,40),alloy);tray.position.y=-.10;group.add(tray);
     const foot=new T.Mesh(new T.CylinderGeometry(.13,.18,.54,20),enamel);foot.position.y=-.41;group.add(foot);
     const bed=new T.Mesh(new T.CylinderGeometry(.355,.35,.025,36),soil);bed.position.y=-.012;group.add(bed);
-    const height={value:0},strength={value:0};
-    function dots(coords,color,size,offset){
-      const geo=new T.BufferGeometry();geo.setAttribute('position',new T.Float32BufferAttribute(coords,3));
+    const timeline=paths.flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance);
+    const length=timeline[timeline.length-1].distance;
+    function reading(samples,color,size,offset){
+      const geo=new T.BufferGeometry();
+      const coords=samples.flatMap(s=>s.point.toArray());
+      geo.setAttribute('position',new T.Float32BufferAttribute(coords,3));
       const mat=new T.PointsMaterial({color,size,transparent:true,depthWrite:false,depthTest:false});
-      mat.onBeforeCompile=sh=>{
-        sh.uniforms.h=height;sh.uniforms.power=strength;
-        sh.vertexShader='varying float elevation;\n'+sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nelevation=position.y;');
-        sh.fragmentShader='varying float elevation;uniform float h,power;\n'+sh.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nif(distance(gl_PointCoord,vec2(.5))>.5)discard;diffuseColor.a*=power*(1.-smoothstep(h-.04,h+.04,elevation));');
+      mat.onBeforeCompile=shader=>{
+        shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>',
+          '#include <color_fragment>\nif(distance(gl_PointCoord,vec2(.5))>.5)discard;');
       };
-      const obj=new T.Points(geo,mat);obj.position.x=offset;obj.renderOrder=7;group.add(obj);return obj;
+      const cloud=new T.Points(geo,mat);cloud.position.x=offset;cloud.renderOrder=7;group.add(cloud);
+      const arrival=samples.map(sample=>sample.distance/length);
+      return function reveal(t,opacity){
+        cloud.visible=t>=0;
+        if(!cloud.visible)return;
+        let count=0;
+        if(t>=1)count=arrival.length;
+        else while(count<arrival.length&&arrival[count]<=t)count++;
+        geo.setDrawRange(0,count);mat.opacity=opacity;
+      };
     }
-    const layers=[dots(ordinary,0xd4deda,.011,-.012),dots([...ordinary,...addition],0x74f6df,.007,0)];
+    const previous=reading(paths.filter(p=>!p.newGrowth).flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance),
+      0xe2ded7,.018,-.026);
+    const current=reading(timeline,0x77ffe1,.022,.012);
     group.traverse(o=>o.layers.enable(1));
     const plant={group,kind,extra,demo,target,scanned:false,marked:false,age:Infinity,
-      show(dt){this.age+=dt;const a=this.age;
-        height.value=-.04+1.08*T.MathUtils.smoothstep(a,0,1.8);
-        strength.value=T.MathUtils.smoothstep(a,0,.25)*(1-T.MathUtils.smoothstep(a,4.0,5.2));
-        for(const o of layers)o.visible=strength.value>.001;
+      show(dt){
+        this.age+=dt;
+        const t=Number.isFinite(this.age)?this.age:-1;
+        previous(t/1.08,t<1.08?.93:.63);
+        current((t-.94)/(scanDuration-.94),.98);
       }};
     pots.push(plant);return plant;
   }
+const bedLights=[];
+  const lilac=finish(0xb1a0ce), sage=finish(0x739b7d), moss=finish(0x628268), blossom=finish(0xdbaec1);
+  const damp=new T.MeshStandardMaterial({color:0x568e8c,roughness:.18,metalness:.38});
+  const plantingX=(side,z)=>side===0?-.80+.18*Math.sin((z+29)*.62):2.40+.12*Math.sin(z*.56);
+  for(const side of [0,1]){
+    const start=side===0?-27.8:-30.4,end=side===0?-40.1:-41;
+    const line=Array.from({length:26},(_,i)=>start+(end-start)*i/25);
+    for(const [width,y,mat] of [[1.12,-4.74,enamel],[1.02,-4.67,side===0?moss:damp]]){
+      mesh(sheet(30,2,(t,s)=>{const z=start+(end-start)*t;return [plantingX(side,z)+(s-.5)*width,y,z];}),mat);
+    }
+    for(const sign of [-1,1]){
+      const rim=line.map(z=>[plantingX(side,z)+sign*.56,-4.68,z]);
+      tube(rim,.042,alloy);
+      tube(rim.map(([x,y,z])=>[x,y-.12,z]),.037,enamel);
+    }
+    for(let z=start-.6;z>end;z-=1.8){
+      box(plantingX(side,z),-5.02,z,.13,.53,.13,enamel);
+    }
+    const lit=new T.MeshBasicMaterial({color:0xa7f5da,transparent:true,opacity:.26});
+    const rail=line.map(z=>V(plantingX(side,z)+(side===0?.57:-.57),-4.655,z));
+    const obj=new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(rail),36,.017,6,false),lit);
+    room.add(obj);bedLights.push(obj);
+  }
+  const seats=[[-.91,-32.0],[-.85,-33.25],[-.92,-34.55],[2.36,-37.85],[2.39,-39.25]];
   const teacher=specimen('铃兰',false,true);
-  teacher.group.position.set(.72,-4.68,-29.1);
+  teacher.group.position.set(-.69,-4.65,-29.15);
   for(const [kind,extra] of [['鹿角蕨',false],['卷叶蕨',true],['铃兰',false],['鹿角蕨',true],['卷叶蕨',false]])specimen(kind,extra);
-  let lastSeats='';
   function arrange(){
-    const order=pots.slice(1);
-    for(let i=order.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[order[i],order[j]]=[order[j],order[i]];}
-    const seats=()=>order.map(p=>Number(p.extra)).join('');
-    if(seats()===lastSeats)order.push(order.shift());
-    lastSeats=seats();
-    order.forEach((p,i)=>{const a=(i-2)*.42;p.group.position.set(.72+2.6*Math.sin(a),-4.69+.13*Math.abs(i-2),-35.7-2.6*Math.cos(a));p.number=i+1;});
-    for(const p of pots){p.scanned=p.marked=false;p.age=Infinity;p.show(0);}
+    const atLeft=pots.filter(p=>!p.demo&&(p.kind==='鹿角蕨'||p.kind==='铃兰'));
+    const atRight=pots.filter(p=>p.kind==='卷叶蕨');
+    for(const row of [atLeft,atRight]){
+      for(let i=row.length-1;i>0;i--){
+        const j=Math.floor(Math.random()*(i+1));[row[i],row[j]]=[row[j],row[i]];
+      }
+    }
+    const order=[...atLeft,...atRight];
+    order.forEach((p,i)=>{const [x,z]=seats[i];p.group.position.set(x,-4.65,z);p.station=i<3?0:1;p.number=i+1;});
+    for(const p of pots){p.scanned=p.marked=false;p.examined=false;p.away=0;p.watch=0;p.hintAge=-1;p.hintPlayed=false;p.age=Infinity;p.show(0);}
   }
   arrange();
+  // Vegetation is batched by material. Leave viewing windows around the six interactive plants.
+  function leafBlade(x,y,z,angle,length,width,lift,mat){
+    const c=Math.cos(angle),s=Math.sin(angle);
+    mesh(sheet(8,4,(t,v)=>{
+      const w=(v-.5)*2*width*Math.sin(Math.PI*t)**.75;
+      return [x+c*t*length-s*w,y+lift*Math.sin(t*2.1)+.035*(1-Math.abs(v*2-1))*Math.sin(Math.PI*t),z+s*t*length+c*w];
+    }),mat);
+  }
+  const cushion=finish(0x90a885), softPink=finish(0xedc1c3), pollen=finish(0xe5cf87);
+  for(let side=0;side<2;side++){
+    for(let j=0;j<105;j++){
+      const z=(side===0?-27.95:-30.65)-rand()*(side===0?11.9:9.95);
+      const x=plantingX(side,z)+(rand()-.5)*.88;
+      if([[-.69,-29.15],...seats].some(([px,pz])=>Math.hypot(x-px,z-pz)<.43))continue;
+      if(side===1 && j%4!==0)continue; // Leave visible water between floating seedling islands.
+      const r=.055+rand()*.12;
+      mesh(new T.IcosahedronGeometry(r,1).scale(1.4,.43,1).translate(x,-4.654,z),j%3?moss:cushion);
+      for(let k=0;k<3;k++)leafBlade(x,-4.63,z,k*2.1+j,.09+rand()*.07,.029,.055+rand()*.10,leaf);
+      if(j%5===0){
+        const y=-4.53+rand()*.07;
+        tube([[x,-4.64,z],[x+.02,y-.04,z],[x,y,z]],.004,vein);
+        for(let k=0;k<5;k++){
+          const a=k*tau/5;
+          mesh(new T.SphereGeometry(.025,8,5).scale(1,.46,.82).translate(x+.021*Math.cos(a),y,z+.021*Math.sin(a)),softPink);
+        }
+        mesh(new T.SphereGeometry(.011,7,5).translate(x,y+.009,z),pollen);
+      }
+    }
+  }
+  for(let side=0;side<2;side++){
+    const end=side===0?-39.9:-40.8;
+    for(let z=side===0?-27.95:-30.9;z>end;z-=.39+rand()*.38){
+      const x=plantingX(side,z)+(rand()-.5)*.54,y=-4.65;
+      if([[-.69,-29.15],...seats].some(([px,pz])=>Math.hypot(x-px,z-pz)<.57))continue;
+      const size=.55+rand()*.63;
+      if(rand()<.48){
+        for(let j=0;j<4;j++){
+          const a=j*1.53+rand(),c=Math.cos(a),s=Math.sin(a),h=(.24+rand()*.27)*size;
+          const stalk=Array.from({length:6},(_,k)=>[x+c*k*.057,y+h*Math.sin(k*.34),z+s*k*.057]);
+          tube(stalk,.006,vein);
+          for(let k=1;k<6;k++)for(const turn of [-1,1]){
+            const [px,py,pz]=stalk[k];leafBlade(px,py,pz,a+turn*.94,(.18-.019*k)*size,.022,.032,sage);
+          }
+        }
+      }else{
+        for(let k=0;k<6;k++)leafBlade(x,y,z,k*1.04+rand()*.38,(.19+rand()*.16)*size,.075*size,(.22+rand()*.24)*size,k%3===0?lilac:leaf);
+        if(rand()<.48){
+          const h=.35*size;tube([[x,y,z],[x+.02,y+h*.65,z],[x+.09,y+h,z]],.009,vein);
+          for(let j=0;j<3;j++)mesh(new T.SphereGeometry(.036,8,6).scale(1,.85,1).translate(x+.06+j*.025,y+h-.022*j,z+.02*j),blossom);
+        }
+      }
+    }
+  }
+  // Seedling trays and two ventilated glass covers sit off the inspection bays.
+  for(const [side,z] of [[0,-36.5],[1,-34.6]]){
+    const x=plantingX(side,z);
+    disc(x,-4.63,z,.32,.065,alloy);ring(x,-4.59,z,.30,.014,bronze);
+    mesh(new T.SphereGeometry(.29,20,12,0,tau,0,Math.PI*.5).scale(1,1.6,1).translate(x,-4.6,z),pane);
+    for(let j=0;j<3;j++)leafBlade(x,-4.60,z,j*2,.16,.04,.18,leaf);
+    box(x,-4.70,z+.64,.62,.09,.40,bronze);
+    for(const dx of [-.17,0,.17])for(const dz of [-.10,.09]){
+      disc(x+dx,-4.635,z+.64+dz,.055,.02,soil);
+      leafBlade(x+dx,-4.62,z+.64+dz,dx*8,.055,.02,.065,sage);
+    }
+  }
 
 
-  const rim=Array.from({length:24},(_,i)=>{const a=-1+i*2/23;return [.72+2.63*Math.sin(a),-4.84,-35.7-2.63*Math.cos(a)];});
-  tube(rim,.15,enamel);tube(rim.map(([x,y,z])=>[x,y+.1,z]),.024,bronze);
   for(const [m,[positions,normals]] of batches){
     const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(positions,3));
     g.setAttribute('normal',new T.Float32BufferAttribute(normals,3));room.add(new T.Mesh(g,m));
@@ -251,5 +363,5 @@ export function makeCabin(scene){
   const waterFog=new T.FogExp2(0x487d89,.063);
   const passage=scene.getObjectByName('lake-surface')?.material.uniforms.uPassage;
   function open(){room.visible=true;lamp.color.setHex(0xffdc91);if(passage)passage.value=1;}
-  reset();return {room,pots,teacher,arrange,tick,open,waterFog,reset(){reset();if(passage)passage.value=0;}};
+  reset();return {room,pots,teacher,bedLights,arrange,tick,open,waterFog,reset(){reset();if(passage)passage.value=0;}};
 }

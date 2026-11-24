@@ -1,6 +1,6 @@
-import { makeCabin, pilotLamp, pathX, floorAt } from './cabin.mjs';
+import { makeCabin, pilotLamp, pathX, floorAt, scanDuration } from './cabin.mjs';
 import * as THREE from './vendor/three.module.js';
-import { ReachGrab, EyeAim } from './gesture.mjs';
+import { ReachGrab, EyeAim, Pinch } from './gesture.mjs';
 import { ECHO_DURATION, makePond, shore } from './pond.mjs';
 import { eyeCenter, HeadWindow, WindowProjection } from './window-view.mjs';
 
@@ -13,11 +13,14 @@ const windowView = new WindowProjection(camera);
 const tracker = new HeadWindow();
 const { scene, update: updatePond, info: locate, reflect, steer, targetCount } = await makePond();
 
+const pinch=new Pinch();
+let releaseSince=0;
+let routeStop=0,optionalWait=0,heldOpen=0,handGone=0;
 const detector=new ReachGrab(), eyes=new EyeAim();
 const explorer=new THREE.Vector3(), insect=new THREE.Vector3(), waypoint=new THREE.Vector3(), projected=new THREE.Vector3();
 const currentNotes=new Set();
 const handPaths=[[0,1,2,3,4],[0,5,6,7,8],[5,9,10,11,12],[9,13,14,15,16],[13,17,18,19,20],[17,0]];
-const cabinPhases=['descent','teach','walk','inspect','complete'];
+const cabinPhases=['descent','teach','choose','walk','inspect','complete'];
 const greenhousePhase=()=>cabinPhases.includes(phase);
 const clamp=THREE.MathUtils.clamp;
 let stream,hand,face,files,vision,facePoints,handPoints,house;
@@ -28,9 +31,9 @@ let flightStart=new THREE.Vector3(),destination=new THREE.Vector3();
 let lastFrame=performance.now(),lastFaceAt=-Infinity,lastHandAt=-Infinity,lastVideo=-1,faceNext=true;
 
 let screen=null,palm=null,ready=false,lockUntil=0,missUntil=0,feedback='',noteUntil=0,anchored=false;
-let cameraBusy=false, retryAt=0, startupProblem='', generation=0;
+let cameraBusy=false, generation=0;
 
-const tasks={teach:'看向入口铃兰，学习比对轮廓',walk:'前往半圆花台',inspect:'从 5 株中找出 2 株变异植物',daylight:'环顾木台、睡莲与花廊',hunt:'捕捉萤火虫',found:'留意它飞往哪里',flight:'跟随萤火虫',end:'跟随萤火虫前往入口巡检灯',descent:'循灯前往温室 · 找出 2 株变异植物',survey:'前往 2 号标本架',rescan:'从右侧复测嫩梢',mark:'标记伸出支架的嫩梢',catalog:'前往 3 号标本架',third:'查看花心断层',section:'记录内部异变',complete:'巡检完成'};
+const tasks={daylight:'跟随萤火虫',hunt:'张手靠近，合手接住萤火虫',found:'张开手，让它带路',flight:'循着回声与光迹前进',end:'前往巡检灯',descent:'沿玻璃坡道进入水下温室',teach:'巡检任务 · 找出两株与上次不同的植物',choose:'自由选择下一处花台',walk:'沿步道前往花台',inspect:'巡检两侧花台，各找一处异常',complete:'巡检完成 · 两处异常已归档'};
 function headingTo(target){
   const dx=target.x-explorer.x,dz=target.z-explorer.z;
   const angle=Math.atan2(-dx,-dz)-yaw;
@@ -44,8 +47,10 @@ const checkpoints=['backDoor','fromBay','fromHouse','resumeRun'];
 function resetFocus(){focusPlant=viewed=null;dwell=0;ready=false;detector.reset();screen=null;}
 function openMenu(open){
   menu=open;ready=false;
+  if(anomalyArrow)anomalyArrow.hidden=true;
   $('menuTitle').textContent=phase==='complete'?'巡检完成 · 找到了两株变异植物':'选择体验起点';
   $('fromBay').textContent=phase==='complete'?'回到睡莲湾':'从睡莲湾开始';actionKey='';detector.reset();silence();
+  $('plantLabels').hidden=open;$('guideText').hidden=open;$('echoStatus').hidden=open;$('aimDot').hidden=true;
   $('chapterMenu').hidden=!open;$('marker').hidden=open;$('fromHouse').classList.toggle('locked',!saved);
   $('fromHouse').textContent=saved?(phase==='complete'?'再巡检一次':'从温室开始'):'到达温室后解锁';
   $('resumeRun').textContent=phase==='complete'?'回看两处发现':'继续当前体验';
@@ -68,79 +73,162 @@ function controlAt(point){
   }
   return '';
 }
-function menuHand(now){
+function menuHand(now,pressed){
   const id=controlAt(palm)||controlAt(eyes.point);
   if(actionKey!==id){detector.reset();actionKey=id;}
   for(const k of checkpoints)$(k).classList.toggle('hot',k===id);
   if(!id&&!menu)return false;
   const g=detector.update(handPoints,video.videoWidth/video.videoHeight,!!id,now);
-  if(id&&g?.action==='grab'&&now-lastFaceAt<420)chapterAction(id);
+  if(id&&(pressed||(!greenhousePhase()&&g?.action==='grab'))&&now-lastFaceAt<420)chapterAction(id);
   return true;
 }
+const stationNames = ['育苗台', '水培台'];
+const stationViews = [
+  {z:-31.7, aim:new THREE.Vector3(-.92,-4.14,-33.15)},
+  {z:-37.2, aim:new THREE.Vector3(2.30,-4.14,-38.5)}
+];
+const junctionZ = -27.65;
+const entranceAim = new THREE.Vector3(.76,-4.04,-33);
+const stationSigns = [
+  {name:'育苗台', point:new THREE.Vector3(-.78,-3.98,-32.3), station:0},
+  {name:'水培台', point:new THREE.Vector3(2.22,-3.98,-32.3), station:1}
+];
+let station=-1, chosenSign=null, scanning=null, focusAge=0;
+const crossSign={name:'',point:new THREE.Vector3(),station:0};
+let anomalyArrow;
+const returnSign={name:'回到岔口',point:new THREE.Vector3(),station:-1};
 function enterHouse(){
   house??=makeCabin(scene);house.open();house.arrange();
-  resetFocus();finishAt=Infinity;pulse=null;echo=0;
-  explorer.set(.95,0,-18);headingTo(house.teacher.group.position);yaw=turnTo;pitch=tiltTo;
+  resetFocus();station=-1;scanning=chosenSign=null;finishAt=Infinity;pulse=null;echo=0;
+  explorer.set(pathX(-18),0,-18);insect.copy(pilotLamp);
+  headingTo(plantPoint(house.teacher));yaw=turnTo;pitch=tiltTo;
   changePhase('descent');labelsReady();
 }
 function labelsReady(){
   const root=$('plantLabels');root.replaceChildren();
-  for(const plant of house.pots){
-    const tag=document.createElement('span');tag.className='plantLabel';root.appendChild(tag);plant.tag=tag;
+  anomalyArrow=document.createElement('span');anomalyArrow.className='anomalyArrow';
+  anomalyArrow.setAttribute('aria-hidden','true');anomalyArrow.hidden=true;root.appendChild(anomalyArrow);
+  for(const item of [...house.pots,...stationSigns,crossSign,returnSign]){
+    const tag=document.createElement('span');
+    tag.className='plantLabel';tag.hidden=true;root.appendChild(tag);item.tag=tag;
   }
 }
-function plantPoint(p,detail=false){
-  const point=p.group.position.clone();
-  return point.add(detail?p.target:new THREE.Vector3(0,.46,0));
+function plantPoint(p){
+  return p.group.position.clone().add(new THREE.Vector3(0,.43,0));
 }
 function plantProgress(){return house.pots.filter(p=>p.marked).length;}
-function markPlant(){
-  const p=focusPlant;
-  if(phase!=='inspect'||!p||!p.scanned||p.marked||menu)return;
-  p.age=0;
-  if(!p.extra){signalText('两次轮廓吻合，这株健康');return;}
+function markPlant(p){
+  if(!p.extra){signalText('轮廓吻合 · 这株生长正常');return;}
   p.marked=true;
-  signalText(p.kind==='鹿角蕨'?'已标记 · 额外长出一支':'已标记 · 一茎分出两个卷芽');
-  $('count').textContent='已标记 '+plantProgress()+' / 2';
+  const n=plantProgress();
+  signalText(p.kind==='鹿角蕨'?'发现已记录 · 额外的分叉':'发现已记录 · 一茎双芽');
+  $('count').textContent='巡检记录 '+n+' / 2';
   note(0,850,.16,.14);note(.15,1140,.19,.12);
-  if(plantProgress()===2){changePhase('complete');finishAt=gameTime+3200;}
+  if(n===2){changePhase('complete');finishAt=gameTime+5800;}
+}
+function moveStation(next){
+  if(anomalyArrow)anomalyArrow.hidden=true;
+  station=next;focusPlant=chosenSign=null;focusAge=0;
+  changePhase('walk');
+}
+function confirmHouse(){
+  if(menu||scanning||focusAge<.12)return;
+  if(chosenSign){moveStation(chosenSign.station);return;}
+  const p=focusPlant;
+  if(!p||p.marked||!['teach','inspect'].includes(phase))return;
+  if(p.scanned){if(!p.demo)markPlant(p);return;}
+  scanning=p;p.age=0;scanSound();
 }
 function progressHouse(dt){
-  const teaching=phase==='descent'||phase==='teach';
-  const dest=teaching?-27.05:-33.85;
-  explorer.z+=clamp(dest-explorer.z,-dt*1.8,dt*1.8);explorer.x=.78;explorer.y=floorAt(explorer.z)+1.25;
-  headingTo(teaching?plantPoint(house.teacher):new THREE.Vector3(.72,-4.18,-37.7));
-  if(phase==='descent'&&Math.abs(dest-explorer.z)<.07)changePhase('teach');
-  if(phase==='teach'&&house.teacher.scanned&&house.teacher.age>4.7){resetFocus();changePhase('walk');return;}
-  if(phase==='walk'&&Math.abs(dest-explorer.z)<.07){resetFocus();changePhase('inspect');}
+  const dest=phase==='descent'||phase==='teach'||station<0?junctionZ:stationViews[station].z;
+  explorer.z+=clamp(dest-explorer.z,-dt*2.4,dt*2.4);
+  explorer.x=pathX(explorer.z);explorer.y=floorAt(explorer.z)+1.3;
+  const aim=['descent','teach'].includes(phase)?plantPoint(house.teacher):
+    station<0?entranceAim:stationViews[station].aim;
+  headingTo(aim);
+  if(phase==='descent'){
+    const t=clamp((-18-explorer.z)/(-18-junctionZ),0,1);
+    insect.lerpVectors(pilotLamp,house.teacher.group.position,t);
+    insect.y+=.30*t+.45*Math.sin(t*Math.PI);
+    if(t>=.999)changePhase('teach');
+  }
+  if(phase==='walk'&&Math.abs(dest-explorer.z)<.05){
+    if(station>=0){
+      const right=new THREE.Vector3(explorer.z-aim.z,0,aim.x-explorer.x).normalize();
+      crossSign.station=1-station;
+      crossSign.name=station===0?'水培台 →':'← 育苗台';
+      crossSign.point.copy(aim).addScaledVector(right,station===0?.82:-.82);
+      crossSign.point.y+=.48;
+      returnSign.point.copy(aim);returnSign.point.y-=.61;
+    }
+    changePhase(station<0?'choose':'inspect');
+  }
+  if(scanning&&scanning.age>=scanDuration){
+    scanning.scanned=true;
+    if(scanning.demo)signalText('上次与本次轮廓吻合 · 铃兰健康');
+    scanning=null;
+  }
+  if(phase==='teach'&&house.teacher.scanned&&house.teacher.age>4.15){
+    resetFocus();focusAge=0;changePhase('choose');
+  }
   if(phase==='complete'&&gameTime>=finishAt){finishAt=Infinity;openMenu(true);}
 }
 function observeBeds(dt){
-  if(!greenhousePhase())return;
-  const candidates=phase==='teach'?[house.teacher]:phase==='inspect'?house.pots.slice(1):[];
-  const sight=eyes.point||{x:.5,y:.5};
-  let chosen=null,nearest=Infinity;
-  for(const p of house.pots){
-    const pt=projectTarget(plantPoint(p));
-    const visible=!menu && pt.inside && (p.demo?phase==='teach':['inspect','complete'].includes(phase));
-    const tag=p.tag;tag.hidden=!visible;
-    if(visible){
-      tag.style.left=pt.x*100+'%';tag.style.top=pt.y*100+'%';
-      tag.textContent=(p.demo?'示范':p.number+' 号')+' · '+p.kind+(p.marked?' ✓ 已标记':p.scanned?' · 已扫描':'');
-      const dist=Math.hypot((pt.x-sight.x)*innerWidth,(pt.y-sight.y)*innerHeight);
-      if(candidates.includes(p)&&dist<nearest&&dist<innerHeight*.14){chosen=p;nearest=dist;}
+  let candidate=null, best=Infinity;
+  const eye=eyes.point;
+  const sight={x:.5+clamp((eye?.x??.5)-.5,-.35,.35)*.55,y:.5+clamp((eye?.y??.5)-.5,-.3,.3)*.6};
+  const old=focusPlant||chosenSign;
+  for(const item of [...house.pots,...stationSigns,crossSign,returnSign]){
+    const sign=!!item.point;
+    const allowed=sign?((item===returnSign||item===crossSign)?phase==='inspect':phase==='choose'):
+      item.demo?phase==='teach':station===item.station&&['inspect','complete'].includes(phase);
+    const pt=projectTarget(sign?item.point:plantPoint(item));
+    const visible=allowed&&pt.inside;
+    item.tag.hidden=!visible;
+    if(!visible)continue;
+    item.tag.style.left=pt.x*100+'%';item.tag.style.top=pt.y*100+'%';
+    item.tag.textContent=sign?item.name:item.marked?'✓ '+item.kind:item.scanned?item.kind+' · 已比对':item.kind;
+    const d=Math.hypot((pt.x-sight.x)*innerWidth/innerHeight,pt.y-sight.y);
+    const score=d-(old===item ? .038 : 0);
+    if(!scanning&&score<best && (d<.28||item.demo)){
+      candidate=item;best=score;
     }
   }
-  if(chosen!==focusPlant){if(phase==='inspect')noteUntil=0;focusPlant=chosen;dwell=0;viewed=null;detector.reset();}
-  if(!chosen)return;
-  dwell+=dt;
-  if(dwell>.48&&viewed!==chosen){
-    viewed=chosen;chosen.age=0;scanSound();
+  if(scanning)candidate=scanning;
+  focusAge=old===candidate?focusAge+dt:0;
+  focusPlant=candidate?.group?candidate:null;
+  chosenSign=candidate?.point?candidate:null;
+  for(const item of [...house.pots,...stationSigns,crossSign,returnSign]){
+    item.tag.classList.toggle('selected',item===candidate);
+    if(item===candidate&&item.scanned&&!item.marked&&!item.demo)item.tag.textContent=item.kind+' · 记录异常？';
   }
-  if(viewed===chosen && chosen.age>=1.8)chosen.scanned=true;
+  showAnomalyHint(dt);
+  for(let i=0;i<house.bedLights.length;i++)house.bedLights[i].material.opacity=chosenSign?.station===i ? .95 : .26;
 }
 
 
+function showAnomalyHint(dt){
+  anomalyArrow.hidden=true;
+  for(const plant of house.pots){
+    if(!plant.extra||!plant.scanned||plant.marked)continue;
+    if(phase!=='inspect'||scanning||focusPlant!==plant){
+      plant.away+=dt;
+      if(plant.away>=.5){plant.watch=0;plant.hintPlayed=false;plant.hintAge=-1;}
+      continue;
+    }
+    const revisiting=plant.examined&&plant.away>=.5;
+    plant.away=0;plant.watch+=dt;
+    if(!plant.hintPlayed&&(plant.watch>=5||revisiting)){plant.hintAge=0;plant.hintPlayed=true;}
+    if(plant.watch>=.2)plant.examined=true;
+    if(plant.hintAge<0||plant.hintAge>=2.8)continue;
+    plant.hintAge+=dt;
+    const tip=projectTarget(plant.group.localToWorld(plant.target.clone()));
+    if(!tip.inside)continue;
+    anomalyArrow.style.left=tip.x*100+'%';anomalyArrow.style.top=tip.y*100+'%';
+    anomalyArrow.style.opacity=String(.26+.48*Math.sin(Math.PI*plant.hintAge/1.4)**2);
+    anomalyArrow.hidden=false;
+  }
+}
 function scanSound(){
   const tones=[520,810,1160,1250,1390,860];
   [0,.18,.34,.40,.46,.72].forEach((t,i)=>note(t,tones[i],.055,.054,(i-2.5)*.14,.96));
@@ -329,14 +417,13 @@ function changePhase(next,now=gameTime) {
   lockUntil=missUntil=0; ready=false; detector.reset();
   feedback=''; noteUntil=0;
   $('mode').textContent=greenhousePhase()?'水下观测舱':['end','daylight'].includes(phase)?'日常视角 · 睡莲湾':'蝙蝠 · 自动回声';
-  const stop=foundCount<targetCount?locate(foundCount).name:'水下观测舱';
-  $('task').textContent=phase==='hunt'?stop+' · 捕捉萤火虫':phase==='flight'?'跟随萤火虫前往'+stop:tasks[phase] || '';
+  $('task').textContent=phase==='hunt'&&routeStop>0?'可再捕捉，也可跟随':tasks[phase]||'';
   $('mode').textContent=greenhousePhase()?'温室 · 激光巡检':$('mode').textContent;
-  $('count').textContent=greenhousePhase()?'已标记 '+plantProgress()+' / 2':foundCount+' / '+targetCount+' 处已捕捉';
+  $('count').textContent=greenhousePhase()?'巡检记录 '+plantProgress()+' / 2':'已捧起 '+foundCount+' 次';
 
 }
 function begin() {
-  resetFocus();$('plantLabels').replaceChildren();foundCount=0; explorer.set(0,0,0); house?.reset();
+  resetFocus();$('plantLabels').replaceChildren();foundCount=routeStop=optionalWait=0;station=-1;scanning=chosenSign=null;pinch.reset(); explorer.set(0,0,0); house?.reset();
   insect.copy(locate(0).point);
   turnTo=yaw=0;tiltTo=pitch=0;
   started=true; nextEcho=0; pulse=null; echo=0;
@@ -345,13 +432,20 @@ function begin() {
   ensureAudio();
 }
 function releaseCamera(){
-  generation++;
+  generation++;pinch.reset();
   stream?.getTracks().forEach(t=>t.stop()); stream=null;video.srcObject=null;
   tracker.reset();eyes.reset();detector.reset();facePoints=handPoints=palm=null;ready=false;
   headYaw=headTilt=0;anchored=false;lastVideo=-1; $('cameraPreview').hidden=true;
 }
 async function startCamera(){
   if(cameraBusy||stream||document.hidden)return;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    $('startup').textContent = '请把链接复制到电脑 Chrome 或 Edge 的地址栏，再打开这个 HTTPS 网页。';
+    return;
+  }
+  ensureAudio();
+  const startButton = $('startCamera');
+  startButton.disabled = true;
   cameraBusy=true; const request=++generation;
   $('startup').textContent='请允许摄像头访问，然后看向屏幕中央。';
   try{
@@ -364,22 +458,23 @@ async function startCamera(){
     if(models[1].status==='fulfilled')hand=models[1].value;
     if(request!==generation)return;
     if (!face||!hand)throw Error('model');
-    fitPreview(); $('cameraPreview').hidden=false; startupProblem='';
-    acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，重新连接后将自动继续。');});
+    fitPreview(); $('cameraPreview').hidden=false;
+    acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，重新连接后，请点击重试摄像头。');});
     if(!started){begin();if(saved)openMenu(true);}
     $('intro').hidden=true;$('experience').hidden=false;
   }catch(e){
-    if(request===generation)cameraProblem(e.name==='NotAllowedError'?'请在浏览器地址栏允许摄像头访问，授权后将自动进入。':e.name==='NotFoundError'?'请连接摄像头，连接后会自动进入。':e.name==='NotReadableError'?'摄像头被占用，请关闭其他占用它的程序。':'识别暂时不可用，正在重新连接…');
-  }finally{cameraBusy=false;}
+    if(request===generation)cameraProblem(e.name==='NotAllowedError'?'请在浏览器地址栏允许摄像头访问，授权后请点击重试摄像头。':e.name==='NotFoundError'?'请连接摄像头，连接后请点击重试摄像头。':e.name==='NotReadableError'?'摄像头被占用，请关闭其他占用它的程序。':'识别暂时不可用，请点击重试摄像头。');
+  }finally{cameraBusy=false;startButton.disabled=false;}
 }
 function cameraProblem(text){
-  releaseCamera();startupProblem=text;retryAt=performance.now()+6000;
+  releaseCamera();
+  $('startCamera').textContent='重试摄像头';
   $('startup').textContent=text;$('intro').hidden=false;$('experience').hidden=true;
 }
 document.addEventListener('visibilitychange',()=>{
-  lastFrame=performance.now();detector.reset();eyes.reset();tracker.reset();
+  lastFrame=performance.now();pinch.reset();detector.reset();eyes.reset();tracker.reset();
   palm=null;ready=false;anchored=false;facePoints=null;lastFaceAt=lastHandAt=-Infinity;
-  if(document.hidden){silence();audio?.suspend();}else{if(started)ensureAudio();if(!stream)startCamera();}
+  if(document.hidden){silence();audio?.suspend();}else if(started && !menu){ensureAudio();}
 });
 window.addEventListener('pagehide',()=>{releaseCamera();face?.close();hand?.close();audio?.close();});
 function palmCenter(joints){
@@ -403,68 +498,106 @@ function track(now){
   }else{
     handPoints=hand.detectForVideo(video,now).landmarks[0];
     palm=handPoints?palmCenter(handPoints):null;lastHandAt=now;
-    if(menuHand(now)){drawPreview();return;}
-    const active=screen?.inside && (catchAvailable()||(phase==='inspect' && focusPlant?.scanned)) && now-lastFaceAt<420;
-    const radius=clamp(innerHeight*.16,58,155)*(gameTime<lockUntil?1.4:1);
-    const gesture=detector.update(handPoints,video.videoWidth/video.videoHeight,active && distanceTo(palm)<radius,now);
+    const aspect=video.videoWidth/video.videoHeight;
+    const pressed=pinch.update(handPoints,aspect,now);
+    if(menuHand(now,pressed)){drawPreview();return;}
+    if(now-lastFaceAt>=420){ready=false;return;}
+    if(greenhousePhase()){if(pressed)confirmHouse();drawPreview();return;}
+    const radius=clamp(innerHeight*.17,60,168);
+    const near=catchAvailable()&&screen?.inside&&distanceTo(palm)<radius;
+    const gesture=detector.update(handPoints,aspect,near,now);
     ready=!!gesture?.ready;
-    if(active && gesture?.action==='grab' && distanceTo(palm)<radius*1.45){
-      if(catchAvailable()){
-        foundCount++;changePhase('found');note(0,760,.13,.17);note(.14,1110,.22,.15);
-      }else markPlant();
-    }else if(phase==='hunt'&&gesture?.action==='miss'){missUntil=gameTime+1400;}
+    if(phase==='found'){
+      if(gesture?.open){if(!releaseSince)releaseSince=now;heldOpen=(now-releaseSince)/1000;}
+      else {releaseSince=0;heldOpen=0;}
+    }else if(near&&gesture?.action==='grab'){releaseSince=0;captureFirefly();}
+    else if(phase==='hunt'&&gesture?.action==='miss')missUntil=gameTime+1000;
+
   }
   drawPreview();
 }
-function catchAvailable(){return phase==='hunt' && phaseTime>=(foundCount===0?6000:3000);}
+function catchAvailable(){return phase==='hunt'&&phaseTime>=900;}
+function startFlight(){
+  flightStart.copy(insect);
+  routeStop++;
+  destination.copy(routeStop<targetCount?locate(routeStop).point:pilotLamp);
+  changePhase('flight');
+}
+function captureFirefly(){
+  foundCount++;heldOpen=0;handGone=0;
+  if(screen&&palm){
+    const spark=document.createElement('i');spark.className='caughtGlow';
+    spark.style.left=screen.x*100+'%';spark.style.top=screen.y*100+'%';
+    $('experience').appendChild(spark);
+    const motion=spark.animate([
+      {transform:'translate(-50%,-50%) scale(1)',opacity:1},
+      {transform:'translate(calc(-50% + '+((palm.x-screen.x)*innerWidth)+'px),calc(-50% + '+((palm.y-screen.y)*innerHeight)+'px)) scale(.45)',opacity:.25}
+    ],{duration:240,easing:'ease-out'});
+    motion.onfinish=()=>spark.remove();
+  }
+  changePhase('found');note(0,760,.13,.17);note(.14,1110,.22,.15);
+}
+const handWorld=new THREE.Vector3();
+function underPalm(depth){
+  const p=palm||{x:.5,y:.55};
+  handWorld.set(2*p.x-1,1-2*p.y,.5).unproject(camera).sub(camera.position).normalize();
+  return handWorld.multiplyScalar(depth).add(camera.position);
+}
+function advanceBay(dt){
+  if(phase==='daylight'){
+    const t=THREE.MathUtils.smoothstep(phaseTime,1500,5200);
+    insect.set(.52+.65*Math.sin(t*Math.PI),.14+.11*Math.sin(gameTime*.0015),-2.65).lerp(locate(0).point,t);
+    if(phaseTime>=5200){changePhase('hunt');nextEcho=gameTime;}
+  }else if(phase==='hunt'){
+    waypoint.copy(locate(routeStop).point);
+    const settle=1-THREE.MathUtils.smoothstep(phaseTime,0,900);
+    waypoint.y+=.018*Math.sin(gameTime*.003)+.17*settle;
+    waypoint.x+=.19*settle*Math.sin(phaseTime*.004);
+    if(catchAvailable()&&palm&&distanceTo(palm)<innerHeight*.24){
+      waypoint.lerp(underPalm(camera.position.distanceTo(waypoint)),.21);
+    }
+    insect.lerp(waypoint,1-Math.exp(-dt*9));headingTo(locate(routeStop).point);
+    if(routeStop>0){
+      const reaching=palm&&distanceTo(palm)<innerHeight*.23;
+      if(reaching)optionalWait=0;else optionalWait+=dt;
+      if(optionalWait>5.8)startFlight();
+    }
+  }else if(phase==='found'){
+    if(palm){
+      handGone=0;insect.lerp(underPalm(1.5),1-Math.exp(-dt*12));
+    }else handGone+=dt;
+    if(phaseTime>520 && (heldOpen>=.1||handGone>.95))startFlight();
+  }else if(phase==='flight'){
+    const t=clamp(phaseTime/4400,0,1);
+    insect.lerpVectors(flightStart,destination,t*t*(3-2*t));insect.y+=.44*Math.sin(Math.PI*t);
+    waypoint.copy(insect);waypoint.z+=3.05;waypoint.y=0;
+    explorer.lerp(waypoint,1-Math.exp(-dt*2));steer(explorer);headingTo(insect);
+    if(t===1){
+      if(routeStop===targetCount){house??=makeCabin(scene);house.open();changePhase('end');}
+      else {optionalWait=0;changePhase('hunt');}
+    }
+  }else if(phase==='end'){
+    waypoint.set(pathX(-18),0,-18);explorer.lerp(waypoint,1-Math.exp(-dt*1.35));
+    if(explorer.z< -17.65 && phaseTime>2200){
+      try{localStorage.setItem('lotus-bay:glasshouse','1');}catch{}
+      saved=true;enterHouse();note(0,912,.18,.16);
+    }
+  }
+}
+function advance(dt){
+  if(greenhousePhase())progressHouse(dt);else advanceBay(dt);
+}
+
+
 function autoEcho(){
-  const marker=locate(Math.min(foundCount,targetCount-1),explorer,yaw,insect);
+  const marker=locate(Math.min(routeStop,targetCount-1),explorer,yaw,insect);
   pulse={kind:phase==='flight'?'passage':'confirm',aim:2,marker,at:gameTime};
   nextEcho=gameTime+3000;
   note(0,1510,.085,.16);note(.22,700,.09,.055,-.3);
   note(Math.min(2.5,marker.delay),1030,.16,.17,marker.pan);
 }
-function advance(dt){
-  if(phase==='daylight'){
-    const t=THREE.MathUtils.smoothstep(phaseTime,9000,20000);
-    insect.set(.52+Math.sin(t*Math.PI)*.65,.14+.11*Math.sin(phaseTime*.0015),-2.65);
-    insect.lerp(locate(0).point,t);
-    if(phaseTime>=20000){changePhase('hunt');nextEcho=gameTime;}
-    return;
-  }
-  if(phase==='found'&&phaseTime>2700){
-    flightStart.copy(insect);destination.copy(foundCount<targetCount?locate(foundCount).point:pilotLamp);
-    changePhase('flight');
-  }
-  if(phase==='flight'){
-    const t=clamp(phaseTime/7000,0,1);
-    insect.lerpVectors(flightStart,destination,t*t*(3-2*t));insect.y+=.48*Math.sin(Math.PI*t);
-    waypoint.copy(insect);waypoint.z+=3.05;waypoint.y=0;
-    explorer.lerp(waypoint,1-Math.exp(-dt*2));steer(explorer);
-    headingTo(insect);
-    if(t===1){
-      if(foundCount===targetCount){house??=makeCabin(scene);house.open();changePhase('end');}
-      else changePhase('hunt');
-    }
-  }else if(phase==='hunt'){
-    insect.copy(locate(foundCount).point);
-    insect.y+=.065*Math.sin(gameTime*.0018);insect.x+=.05*Math.sin(gameTime*.0014);
-    headingTo(insect);
-  }else if(phase==='end'){
-    waypoint.set(pathX(-18),0,-18);
-    explorer.lerp(waypoint,1-Math.exp(-dt*.8));
-    if(explorer.z< -17.65 && phaseTime>4500){
-      let stored=true;try{localStorage.setItem('lotus-bay:glasshouse','1');}catch{stored=false;}
-      saved=true;enterHouse();note(0,912,.18,.16);note(.21,1230,.25,.11);signalText(stored?'已到达温室 · 起点已保存':'已到达温室 · 本次体验已解锁');
-    }
-  }
-  if(greenhousePhase())progressHouse(dt);
-}
-function focusTarget(){
-  if(!greenhousePhase())return insect;
-  return plantPoint(focusPlant||house.teacher,!!focusPlant?.marked);
-}
-function projectTarget(target=focusTarget()){
+
+function projectTarget(target){
   projected.copy(target).applyMatrix4(camera.matrixWorldInverse);
   const rear=projected.z>=0;
   const lateral=projected.x,up=projected.y;
@@ -489,7 +622,7 @@ function drawMap(){
   const route=[{x:0,z:0},...stops.map(v=>({x:v.x,z:v.z+3.05})),pilotLamp,{x:.78,z:-27.05},{x:.78,z:-33.85}];
   line(route);ctx.lineWidth=4;ctx.strokeStyle='#97c7b9';ctx.stroke();
   const places=[...stops,pilotLamp,{x:.72,z:-29.1},{x:.72,z:-38}];
-  const index=greenhousePhase()?(['descent','teach'].includes(phase)?4:5):Math.min(foundCount,3);
+  const index=greenhousePhase()?(['descent','teach'].includes(phase)?4:5):Math.min(routeStop,3);
   places.forEach((v,i)=>{ctx.beginPath();ctx.arc(...at(v),i===index?5:3,0,Math.PI*2);ctx.fillStyle=i===index?'#ffc76f':'#9db4ae';ctx.fill();});
   ctx.font='16px "Microsoft YaHei", sans-serif';ctx.fillStyle='#dcece6';
   ctx.fillText('睡莲湾',55,28);ctx.fillText('坡道',181,126);ctx.fillText('温室',267,52);
@@ -500,48 +633,70 @@ function drawMap(){
 }
 
 function drawUI(now,dt,present){
-  const marker=$('marker'); marker.hidden=!present||phase==='daylight';
-  const handVisible=present&&palm&&now-lastHandAt<350;
+  const marker=$('marker'),handVisible=present&&palm&&now-lastHandAt<400;
+  $('tracking').textContent=present?'':facePoints?'请看屏幕中央，保持一瞬':'请让脸回到画面中';
   $('palm').hidden=!handVisible;
   if(handVisible){$('palm').style.left=palm.x*100+'%';$('palm').style.top=palm.y*100+'%';}
-  $('tracking').textContent=present?'':tracker.status(now)==='calibrating'||facePoints?'请看屏幕中央，保持一瞬':'请让脸回到画面中';
-  if(!present)return;
+  $('palm').classList.toggle('holding',phase==='found');
+  $('palm').classList.toggle('reaching',phase==='hunt'&&ready);
+  $('palm').textContent=phase==='found'?'':'✧';
+  $('palmStatus').textContent=phase==='found'?'掌心有光':handVisible?'已看到手':'待伸手';
+  marker.hidden=true;
+  $('aimDot').hidden=!present||!greenhousePhase()||['descent','walk','complete'].includes(phase);
+  if(!present){
+    if(anomalyArrow)anomalyArrow.hidden=true;
+    focusPlant=chosenSign=null;focusAge=0;return;
+  }
   if(greenhousePhase())observeBeds(dt);
-  screen=projectTarget();
-  if(phase==='walk'||phase==='complete'||(phase==='inspect'&&!focusPlant))marker.hidden=true;
-  const gaze=eyes.point;
-  const gazed=screen.inside&&distanceTo(gaze)<innerHeight*.19;
-  if(gazed)lockUntil=gameTime+650;
-  marker.className=[greenhousePhase()?'botanical':'',dwell>.2?'observing':'',screen.inside?'':'edge',gameTime<lockUntil?'focus':'',ready?'ready':''].join(' ');
-  marker.style.left=screen.x*100+'%';marker.style.top=screen.y*100+'%';
-  const arrow=$('arrow'),bubble=$('bubble');
-  arrow.hidden=screen.inside && phase!=='hunt' && !greenhousePhase();
-  arrow.style.transform=screen.inside?'translate(-34px, 0)':'rotate('+screen.angle+'deg)';
-  let text='';
-  if(!screen.inside)text='朝箭头方向转头';
-  else if(phase==='hunt'&&!catchAvailable())text=foundCount===0&&phaseTime<3000?'回声掠过木台与睡莲':'听，叶片间有振翅声';
-  else if(phase==='hunt')text=ready?'轻轻合拢手指':gameTime<missUntil?'再试一次，先把手掌伸进光圈':foundCount===0?'张开手，向光点伸过去':'伸手捕捉';
-  else if(phase==='found')text='抓到了！ '+foundCount+' / '+targetCount;
-  else if(phase==='flight')text='跟着这道光';
-  else if(phase==='end')text='巡检灯亮了 · 跟着光进入温室';
-  else if(gameTime<noteUntil)text=feedback;
-  else if(phase==='descent')text='前往入口示范株';
-  else if(phase==='teach')text=house.teacher.scanned?'两次轮廓吻合，这株健康':'看向铃兰 · 观察灰白旧轮廓和青色新点';
-  else if(phase==='inspect'&&focusPlant)text=focusPlant.marked?'已标记':focusPlant.scanned?'发现变异？伸手合拢标记':'看稳这株，激光正在扫描';
-  if(bubble.textContent!==text)bubble.textContent=text;
-  const width=bubble.offsetWidth, x=screen.x*innerWidth;
-  bubble.style.left=clamp(-width/2,8-x,innerWidth-width-8-x)+'px';
-  bubble.style.top=screen.y>.79?'-48px':'23px';
-  $('palmStatus').textContent=ready?'可以合拢':handVisible?'已看到手掌':'待伸手';
+  const target=chosenSign?.point||(focusPlant?plantPoint(focusPlant):insect);
+  screen=projectTarget(target);
+  let hint='';
+  if(phase==='daylight')hint='沿着湖面，跟上那只萤火虫';
+  if(phase==='hunt')hint=!catchAvailable()?'它正在落下':ready?'轻轻合手，接住它':gameTime<missUntil?'张开手，让光靠近掌心':
+    routeStop===0?'伸手靠近光点，再轻轻合手':'再捧一次，或放下手跟它走';
+  if(phase==='found')hint='你捧住了它 · 张开手，让它带路';
+  if(phase==='flight')hint='跟着光迹，听回声掠过湖面';
+  if(phase==='end'||phase==='descent')hint='跟着最后这束光，沿坡道下潜';
+  if(phase==='teach')hint=house.teacher.scanned?'轮廓重合 · 铃兰和上次一样':scanning?'看枝脉的走向 · 灰白是上次，青绿是现在':'看向铃兰，拇指和食指轻捏一下';
+  if(phase==='choose')hint=chosenSign?'轻捏前往'+chosenSign.name:'轻轻转头，选一处花台';
+  if(phase==='walk')hint=station<0?'返回岔口':'前往'+stationNames[station];
+  if(phase==='inspect'){
+    hint=scanning?'沿枝脉比对 · 灰白是上次，青绿是现在':chosenSign?(chosenSign===crossSign?'轻捏，直接去对面'+stationNames[crossSign.station]:'轻捏回到岔口'):
+      !focusPlant?'看向一株植物，或选对面花台的路牌':focusPlant.marked?'这处发现已经记录':
+      focusPlant.scanned?'有不同？轻捏标记 · 也可继续观察':'轻捏扫描这株'+focusPlant.kind;
+  }
+  if(phase==='complete')hint='两处异常已记录 · 巡检完成';
+  if(gameTime<noteUntil)hint=feedback;
+  $('guideText').textContent=hint;
+  $('guideText').classList.toggle('pinchDemo',phase==='teach'&&!scanning&&!house.teacher.scanned);
+  const related=phase==='hunt'||phase==='flight'||phase==='end'||phase==='descent';
+  if(related){
+    marker.hidden=false;
+    marker.className=[screen.inside?'':'edge',ready?'ready':'',phase==='flight'?'flying':''].join(' ');
+    marker.style.left=screen.x*100+'%';marker.style.top=screen.y*100+'%';
+    $('arrow').hidden=screen.inside;
+    $('arrow').style.transform='rotate('+(screen.angle||0)+'deg)';
+    $('bubble').hidden=true;
+  }
+  const listening=['hunt','flight'].includes(phase);
+  const echoAge=pulse?(gameTime-pulse.at)/1000:-1;
+  $('echoStatus').textContent=listening&&echoAge>=0?
+    echoAge<.48?'回声发出':echoAge<pulse.marker.delay?'声波掠过水面':echoAge<pulse.marker.delay+1.05?'回声返回 · '+(pulse.marker.name||'前方'):'':'';
+  if(!$('aimDot').hidden){
+    const eye=eyes.point;
+    $('aimDot').style.left=(.5+clamp((eye?.x??.5)-.5,-.35,.35)*.55)*100+'%';
+    $('aimDot').style.top=(.5+clamp((eye?.y??.5)-.5,-.3,.3)*.6)*100+'%';
+  }
   drawMap();
 }
+
+
 function frame(now){
   requestAnimationFrame(frame);
   const elapsedFrame=now-lastFrame;
   const dt=Math.min(.08,elapsedFrame/1000);lastFrame=now;
   if(document.hidden)return;
-  if(startupProblem && !stream && !cameraBusy && now>=retryAt)startCamera();
-  try{track(now);}catch(error){console.warn(error);cameraProblem('识别中断，正在重新连接…');}
+  try{track(now);}catch(error){console.warn(error);cameraProblem('识别中断，请点击重试摄像头。');}
   const present=started && stream && !cameraBusy && tracker.status(now)==='ready' && now-lastFaceAt<420;
   const pos=tracker.step(dt,now);
   if(menu){
@@ -549,15 +704,15 @@ function frame(now){
     if(palm){$('palm').style.left=palm.x*100+'%';$('palm').style.top=palm.y*100+'%';}
     return;
   }
-  if(present){gameTime+=elapsedFrame;phaseTime+=dt*1000;advance(dt);}
+  if(present){gameTime+=dt*1000;phaseTime+=dt*1000;advance(dt);}
   yaw+=(turnTo+headYaw-yaw)*(1-Math.exp(-dt*7));pitch+=(tiltTo+headTilt-pitch)*(1-Math.exp(-dt*7));
   windowView.viewFrom(pos,yaw,pitch,explorer);camera.updateMatrixWorld();
 
-  const listening=['hunt','found','flight'].includes(phase);
-  if(present && listening && gameTime>=nextEcho)autoEcho();
+  const listening=['hunt','flight','found'].includes(phase);
+  if(present && listening && phase!=='found' && gameTime>=nextEcho)autoEcho();
   echo+=((listening?1:0)-echo)*(1-Math.exp(-dt*(listening?.65:1.3)));
   const age=pulse?(gameTime-pulse.at)/1000:-1;
-  updatePond(gameTime/1000,echo,age,insect,started?1:0,listening?pulse:null,camera,-1,phase,phaseTime/1000,true);
+  updatePond(gameTime/1000,echo,age,insect,started?1:0,listening?pulse:null,camera,phase=== 'hunt'?phaseTime/1000:-1,phase,phaseTime/1000,true);
   soundscape(now,listening);
   if(started)drawUI(now,dt,present);
 
@@ -571,4 +726,4 @@ function frame(now){
 }
 resize();
 requestAnimationFrame(frame);
-startCamera();
+$('startCamera').addEventListener('click', startCamera);

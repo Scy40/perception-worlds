@@ -25,3 +25,34 @@ h1{font:400 58px SimSun,serif;margin:0}.privacy,.camera-legend,#count{font-size:
 #backDoor{margin-top:7px;padding:6px}.chapterAction.hot{background:#54746a;outline:2px solid #c8f5e1}
 .chapterAction.locked{opacity:.45}.plantLabel{position:fixed;transform:translate(-50%,38px);text-shadow:0 1px 4px #000;background:#132c32d9;padding:3px 7px;border-radius:6px;font-size:11px;pointer-events:none}
 #chapterMenu{position:fixed;inset:0;background:#101d2ac7;display:grid;place-items:center;z-index:10}.chapterPanel{width:min(480px,88vw);padding:24px;background:#172d35;border:1px solid #bedaca5c;border-radius:18px;text-align:center}.chapterPanel h2{font:normal 30px SimSun,serif;margin:0}.chapterPanel p{font-size:13px;color:#bcd0c9}.chapterCards{display:flex;gap:12px;margin:15px 0}.chapterCard{flex:1}.thumb{height:65px;border-radius:8px;margin-bottom:4px}.bay{background:center/cover url('./assets/sleeping-lotus.png')}.glass{background:radial-gradient(ellipse at bottom,#6e9e87,#244e54 70%);color:#acd5b7;font:52px Georgia}#palm{z-index:12}
+
+.intro p{line-height:1.55}
+#startup{min-height:2.8em;color:#d3ebe1;font-size:14px}
+#startCamera{border:1px solid #b5dfcf;border-radius:8px;background:#c0ead9;color:#18342e;font:inherit;font-weight:650;padding:12px 20px;cursor:pointer}
+#startCamera:disabled{opacity:.55;cursor:wait}
+#startCamera:focus-visible{outline:2px solid #fff;outline-offset:4px}
+
+#guideText,#echoStatus{position:fixed;left:50%;transform:translateX(-50%);pointer-events:none;text-align:center}
+#guideText{bottom:7vh;padding:9px 17px;color:#fff6de;background:#152c33ed;border:1px solid #c1ded34a;border-radius:18px;font:500 clamp(13px,1.18vw,18px)/1.5 "Microsoft YaHei UI",sans-serif;max-width:49vw;z-index:3}
+#echoStatus{top:12vh;font-size:12px;color:#c5f4ee;text-shadow:0 1px 5px #071b23}
+#guideText:empty,#echoStatus:empty{display:none}
+#aimDot{position:fixed;width:7px;height:7px;background:#ffffd8;border-radius:50%;box-shadow:0 0 0 3px #17372f77;transform:translate(-50%,-50%);pointer-events:none}
+.plantLabel{transform:translate(-50%,20px);border:1px solid #9cc7b57a;transition:background .15s,color .15s;font-size:clamp(11px,1vw,15px)}
+.plantLabel.selected{background:#e7e8bd;color:#213c3c;text-shadow:none;box-shadow:0 0 11px #f5efb77a}
+#marker.flying #ring{width:10px;height:10px;left:-5px;top:-5px;border:0;box-shadow:none}
+#palm.holding{width:49px;height:49px;border:0;background:radial-gradient(ellipse,#fff4aa 3%,#ffd674 13%,#efa74088 35%,transparent 67%);box-shadow:none;animation:held-breath 1.2s ease-in-out infinite}
+#palm.holding::before,#palm.holding::after{content:"";position:absolute;width:5px;height:15px;top:4px;left:17px;background:linear-gradient(transparent,#ffe6a4);border-radius:80%;transform:rotate(-14deg)}
+#palm.holding::after{left:26px;transform:rotate(17deg)}
+#palm.reaching{background:#ffc96044;box-shadow:0 0 18px #ffc35c}
+.caughtGlow{position:fixed;width:24px;height:24px;border-radius:50%;background:radial-gradient(circle,#fff3af,#ffc96480 35%,transparent 70%);pointer-events:none;z-index:5}
+@keyframes held-breath{50%{filter:brightness(1.3);scale:1.08}}
+#guideText.pinchDemo::before,#guideText.pinchDemo::after{content:"";position:absolute;width:7px;height:14px;background:#f6d9a1;border-radius:6px;top:-19px;left:calc(50% - 8px);transform-origin:50% 100%;animation:pinch-motion 1.55s ease-in-out infinite}
+#guideText.pinchDemo::after{left:calc(50% + 2px);animation-name:pinch-other}
+@keyframes pinch-motion{0%,100%{transform:rotate(-24deg)}55%,72%{transform:rotate(18deg)}}
+@keyframes pinch-other{0%,100%{transform:rotate(24deg)}55%,72%{transform:rotate(-18deg)}}
+@media(max-width:750px){#guideText{bottom:24vh;max-width:85vw;width:max-content}}
+
+
+.anomalyArrow{position:fixed;pointer-events:none;width:clamp(32px,3.6vw,56px);height:clamp(38px,4.2vw,64px);transform:translate(-50%,-103%) rotate(-20deg);transform-origin:50% 100%;z-index:4;filter:drop-shadow(0 1px 3px #193c40)}
+.anomalyArrow::after{content:'';display:block;width:100%;height:100%;background:#ffedc3;clip-path:polygon(39% 0,61% 0,63% 52%,91% 46%,50% 100%,9% 46%,37% 52%)}
+.anomalyArrow[hidden]{display:none}
