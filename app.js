@@ -8,12 +8,15 @@ import { eyeCenter, HeadWindow, WindowProjection, quietLook, followAngle } from 
 const $ = id => document.getElementById(id);
 const video = $('camera');
 const canvas = $('world'), overlay = $('trackingOverlay'), pen = overlay.getContext('2d');
+const startup = window.lotusStartup;
+startup.stage('正在绘制湖面和睡莲…','湖面场景准备超时，请重新加载。');
+await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.07, 110);
 const viewShift = new THREE.Vector3(), desiredShift = new THREE.Vector3();
 const windowView = new WindowProjection(camera);
 const tracker = new HeadWindow();
-const { scene, update: updatePond, info: locate, reflect, steer, targetCount } = await makePond();
+const { scene, update: updatePond, info: locate, reflect, steer, targetCount } = makePond();
 
 const pinch=new Pinch();
 let ringFlashUntil=-Infinity;
@@ -33,9 +36,12 @@ let yaw=0,pitch=0,turnTo=0,tiltTo=0,headYaw=0,headTilt=0,echo=0,pulse=null,nextE
 let flightStart=new THREE.Vector3(),destination=new THREE.Vector3();
 let lastFrame=performance.now(),lastFaceAt=-Infinity,lastHandAt=-Infinity,lastVideo=-1,faceNext=true;
 
-let lastGoodFaceAt=-Infinity;
+let faceHold=420, handHold=400, previousFace=-Infinity, previousHand=-Infinity;
+let visibilityEpoch=0;
+const facePresent=now=>tracker.neutral && now-lastFaceAt<faceHold;
 let screen=null,palm=null,ready=false,lockUntil=0,missUntil=0,feedback='',noteUntil=0,anchored=false;
 let cameraBusy=false, retryAt=0, startupProblem='', generation=0;
+let introDrawn=false;
 
 const tasks={daylight:'跟随萤火虫',hunt:'张手靠近，合手接住萤火虫',found:'张开手，让它带路',flight:'循着回声与光迹前进',end:'前往巡检灯',descent:'沿玻璃坡道进入水下温室',teach:'先扫描铃兰',choose:'自由选择下一处花台',walk:'沿步道前往花台',inspect:'每个花台归档一处发现',complete:'自由探索'};
 function headingTo(target){
@@ -83,8 +89,8 @@ function menuHand(now,pressed){
   if(actionKey!==id){detector.reset();actionKey=id;}
   for(const k of checkpoints)$(k).classList.toggle('hot',k===id);
   if(!id&&!menu)return false;
-  const g=detector.update(handPoints,video.videoWidth/video.videoHeight,!!id,now);
-  if(id&&(pressed||(!greenhousePhase()&&g?.action==='grab'))&&now-lastFaceAt<420)chapterAction(id);
+  const g=detector.update(handPoints,video.videoWidth/video.videoHeight,!!id,now,handHold);
+  if(id&&(pressed||(!greenhousePhase()&&g?.action==='grab'))&&facePresent(now))chapterAction(id);
   return true;
 }
 const stationNames = ['育苗台', '水培台'];
@@ -184,7 +190,7 @@ function progressHouse(dt){
 }
 function observeBeds(dt){
   let candidate=null, best=Infinity;
-  const sight=palm && performance.now()-lastHandAt<400 ? palm : null;
+  const sight=palm;
   const old=focusPlant||chosenSign;
   const items=[...house.pots,...stationSigns,crossSign,returnSign];
   for(const item of items){
@@ -427,13 +433,14 @@ async function prepareTracking(){
       worker.onmessage=({data})=>{
         pendingFrame=false;
         if(data.error){useFallback();return;}
-        if(data.generation===generation && stream && !document.hidden && performance.now()-data.now<400)
-          applyTracking(data.kind,data.points,data.now);
+        if(data.generation===generation && data.epoch===visibilityEpoch && stream && !document.hidden)
+          receiveTracking(data.kind,data.points,data.now);
       };
       return;
     }catch(error){worker?.terminate();console.warn('Background tracking unavailable',error);}
   }
   fallbackTracking=true;
+  startup.stage('正在加载本机识别模型…','本机识别模型加载超时，请检查网络后重试。',45000);
   [face,hand]=await Promise.all([makeTracker('face'),makeTracker('hand')]);
 }
 function useFallback(){
@@ -442,6 +449,7 @@ function useFallback(){
 }
 
 function resize() {
+  introDrawn=false;
   renderer.setPixelRatio(Math.min(devicePixelRatio,1.15));
   renderer.setSize(innerWidth,innerHeight,false);
   windowView.setViewport(innerWidth,innerHeight);
@@ -467,24 +475,31 @@ function begin() {
   $('intro').hidden=true; $('experience').hidden=false; changePhase('daylight');
   ensureAudio();
 }
+function resetTracking(){
+  previousFace=previousHand=lastFaceAt=lastHandAt=-Infinity;
+  faceHold=420;handHold=400;
+  tracker.reset();eyes.reset();pinch.reset();detector.reset();
+  facePoints=handPoints=palm=null;ready=anchored=false;
+  releaseSince=heldOpen=handGone=0;
+}
 function releaseCamera(){
-  generation++;pinch.reset();lastGoodFaceAt=lastFaceAt=-Infinity;lastHandAt=-Infinity;eyes.reset();
+  generation++;resetTracking();
   stream?.getTracks().forEach(t=>t.stop()); stream=null;video.srcObject=null;
-  tracker.reset();eyes.reset();detector.reset();facePoints=handPoints=palm=null;ready=false;
   headYaw=headTilt=0;anchored=false;lastVideo=-1; $('cameraPreview').hidden=true;
 }
 async function startCamera(){
   if(cameraBusy||stream||document.hidden)return;
   cameraBusy=true; const request=++generation;
-  $('startup').textContent='请允许摄像头访问，然后看向屏幕中央。';
+  startup.stage('湖面已就绪，请允许摄像头访问。','仍在等待摄像头，请检查地址栏中的摄像头权限，或重新加载。');
   try{
     const acquired=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:'user'},audio:false});
     if(request!==generation){acquired.getTracks().forEach(t=>t.stop());return;}
+    startup.stage('正在连接摄像头画面…','摄像头画面连接超时，请检查设备后重试。');
     stream=acquired;video.srcObject=acquired;await video.play();
-    $('startup').textContent='正在加载眼部与手掌识别…';
+    startup.stage('正在加载眼部与手掌识别…','识别模型加载超时，请检查网络后重试。',45000);
     await prepareTracking();
     if(request!==generation)return;
-    fitPreview(); $('cameraPreview').hidden=false; startupProblem='';
+    startup.done();fitPreview(); $('cameraPreview').hidden=false; startupProblem='';
     acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，重新连接后将自动继续。');});
     if(!started){begin();if(new URLSearchParams(location.search).get('start')==='greenhouse')enterHouse();else if(saved)openMenu(true);}
     $('intro').hidden=true;$('experience').hidden=false;
@@ -494,11 +509,10 @@ async function startCamera(){
 }
 function cameraProblem(text){
   releaseCamera();startupProblem=text;retryAt=performance.now()+6000;
-  $('startup').textContent=text;$('intro').hidden=false;$('experience').hidden=true;
+  startup.problem(text);$('intro').hidden=false;$('experience').hidden=true;
 }
 document.addEventListener('visibilitychange',()=>{
-  lastFrame=performance.now();pinch.reset();detector.reset();eyes.reset();tracker.reset();
-  palm=null;ready=false;anchored=false;facePoints=null;lastGoodFaceAt=lastFaceAt=lastHandAt=-Infinity;
+  visibilityEpoch++;lastFrame=performance.now();resetTracking();
   if(document.hidden){silence();audio?.suspend();}else{if(started)ensureAudio();if(!stream)startCamera();}
 });
 window.addEventListener('pagehide',()=>{releaseCamera();trackingWorker?.terminate();face?.close();hand?.close();audio?.close();});
@@ -512,29 +526,42 @@ function track(now){
   lastSample=now;lastVideo=video.currentTime;faceNext=!faceNext;
   const kind=faceNext?'face':'hand';
   if(trackingWorker){
-    const request=generation, worker=trackingWorker;
+    const request=generation, epoch=visibilityEpoch, worker=trackingWorker;
     pendingFrame=true;
     createImageBitmap(video).then(bitmap=>{
-      if(request!==generation || document.hidden){bitmap.close();pendingFrame=false;return;}
-      worker.postMessage({kind,bitmap,now,generation:request},[bitmap]);
+      if(request!==generation || epoch!==visibilityEpoch || document.hidden){bitmap.close();pendingFrame=false;return;}
+      worker.postMessage({kind,bitmap,now,generation:request,epoch},[bitmap]);
     }).catch(()=>{if(worker===trackingWorker)useFallback();});
     return;
   }
   const result=(faceNext?face:hand).detectForVideo(video,now);
-  applyTracking(kind,(faceNext?result.faceLandmarks:result.landmarks)[0],now);
+  receiveTracking(kind,(faceNext?result.faceLandmarks:result.landmarks)[0],now);
+}
+function receiveTracking(kind,points,sampledAt){
+  const now=performance.now(), latency=now-sampledAt;
+  // Face and hand share one inference slot. Allow a full round trip to each.
+  const previous=kind==='face'?previousFace:previousHand;
+  const interval=Number.isFinite(previous)?now-previous:0;
+  const hold=clamp(Math.max(latency*2,interval)*1.4+100,kind==='face'?420:400,4000);
+  if(kind==='face'){previousFace=now;faceHold=hold;}
+  else{previousHand=now;handHold=hold;}
+  applyTracking(kind,latency<=4000?points:null,now);
 }
 function applyTracking(kind,points,now){
   if(kind==='face'){
     facePoints=points;
     tracker.update(facePoints,video.videoWidth/video.videoHeight,now);eyes.update(facePoints);
-    if(facePoints && tracker.neutral){
+    if(tracker.lastSeen===now && tracker.neutral){
       const c=eyeCenter(facePoints),w=Math.hypot(c.eyes[3].x-c.eyes[0].x,(c.eyes[3].y-c.eyes[0].y)*video.videoHeight/video.videoWidth);
       headYaw=clamp(((facePoints[1].x-c.x)/w-tracker.neutral.yaw)*2.2,-1.45,1.45);
       const relativeY=(facePoints[1].y-c.y)/w;
       if(!anchored){tracker.noseY=relativeY;anchored=true;}
       headTilt=clamp((tracker.noseY-relativeY)*1.65,-.48,.48);
-      lastFaceAt=lastGoodFaceAt=now;
-    } else if(!facePoints){lastFaceAt=-Infinity;}
+      lastFaceAt=now;
+    }else{
+      lastFaceAt=-Infinity;
+      ready=false;palm=null;pinch.reset();detector.reset();releaseSince=heldOpen=handGone=0;
+    }
   }else{
     handPoints=points;
     const nextPalm=handPoints?palmCenter(handPoints):null;
@@ -547,16 +574,16 @@ function applyTracking(kind,points,now){
     const aspect=video.videoWidth/video.videoHeight;
     const indoors=greenhousePhase();
     const control=controlAt(palm);
-    if(indoors && !menu && !control && now-lastFaceAt<420)observeBeds(0);
+    if(indoors && !menu && !control && facePresent(now))observeBeds(0);
     const target=control || (!menu && indoors?houseTarget():null);
-    const pressed=pinch.update(handPoints,aspect,now,now-lastFaceAt<420?target:null,indoors?320:55);
+    const pressed=pinch.update(handPoints,aspect,now,facePresent(now)?target:null,indoors?320:55,handHold);
     if(pressed && indoors)ringFlashUntil=performance.now()+240;
     if(menuHand(now,pressed)){drawPreview();return;}
-    if(now-lastFaceAt>=420){ready=false;return;}
+    if(!facePresent(now)){ready=false;return;}
     if(greenhousePhase()){if(pressed)confirmHouse();drawPreview();return;}
     const radius=clamp(innerHeight*.17,60,168);
     const near=catchAvailable()&&screen?.inside&&distanceTo(palm)<radius;
-    const gesture=detector.update(handPoints,aspect,near,now);
+    const gesture=detector.update(handPoints,aspect,near,now,handHold);
     ready=!!gesture?.ready;
     if(phase==='found'){
       if(gesture?.open){if(!releaseSince)releaseSince=now;heldOpen=(now-releaseSince)/1000;}
@@ -611,7 +638,8 @@ function advanceBay(dt){
     if(routeStop>0){
       const reaching=palm&&distanceTo(palm)<innerHeight*.23;
       if(reaching)optionalWait=0;else optionalWait+=dt;
-      if(optionalWait>5.8)startFlight();
+      // Later stops offer another catch. A resting hand cannot hold the route forever.
+      if(optionalWait>5.8 || phaseTime>=10000)startFlight();
     }
   }else if(phase==='found'){
     if(palm){
@@ -696,7 +724,7 @@ function showRecord(){
   p.drawComparison($('scanPair'));
 }
 function drawUI(now,dt,present){
-  const marker=$('marker'),handVisible=present&&palm&&now-lastHandAt<400;
+  const marker=$('marker'),handVisible=present&&palm;
   $('tracking').textContent=present?'':facePoints?'请看屏幕中央，保持一瞬':'请让脸回到画面中';
   $('palm').hidden=!handVisible;
   if(handVisible){$('palm').style.left=palm.x*100+'%';$('palm').style.top=palm.y*100+'%';}
@@ -758,28 +786,37 @@ function drawUI(now,dt,present){
 
 function frame(now){
   requestAnimationFrame(frame);
-  const elapsedFrame=now-lastFrame;
-  const dt=Math.min(.08,elapsedFrame/1000);lastFrame=now;
+  const frameSeconds=clamp((now-lastFrame)/1000,0,.75);
+  const dt=Math.min(.08,frameSeconds);lastFrame=now;
   if(document.hidden)return;
   if(startupProblem && !stream && !cameraBusy && now>=retryAt)startCamera();
+  // Leave CPU and GPU time for model initialization behind the startup panel.
+  if(!started && introDrawn)return;
   try{track(now);}catch(error){console.warn(error);cameraProblem('识别中断，正在重新连接…');}
-  const present=started && stream && !cameraBusy && tracker.status(now)==='ready' && now-lastFaceAt<420;
-  const pos=tracker.step(dt,now);
+  now=performance.now();
+  const present=started && stream && !cameraBusy && facePresent(now);
+  if(now-lastHandAt>=handHold){palm=null;ready=false;detector.reset();pinch.reset();releaseSince=heldOpen=0;}
+  const pos=tracker.step(dt,now,faceHold);
   if(menu){
     drawPinchRing(now,controlAt(palm));
     $('palm').hidden=!present||!palm;
     if(palm){$('palm').style.left=palm.x*100+'%';$('palm').style.top=palm.y*100+'%';}
     return;
   }
-  const inTransit=phase==='walk'||phase==='descent';
-  const continueWalking=inTransit && started && stream && !cameraBusy && now-lastGoodFaceAt<900;
-  if(present||continueWalking){gameTime+=dt*1000;phaseTime+=dt*1000;advance(dt);}
+  if(present){
+    // Keep route time in real seconds even when rendering or CPU inference is slow.
+    let remaining=frameSeconds;
+    while(remaining>0){
+      const step=Math.min(.08,remaining);
+      gameTime+=step*1000;phaseTime+=step*1000;advance(step);remaining-=step;
+    }
+  }
   const indoors=greenhousePhase();
   const gaze=indoors?eyes.point:null;
   const lookYaw=quietLook(headYaw,.10,1.45)+quietLook(.5-(gaze?.x??.5),.09,.46)*1.55;
   const lookPitch=quietLook(headTilt,.055,.48)+quietLook(.5-(gaze?.y??.5),.07,.45)*.95;
   const aiming=indoors && focusPlant && !scanning && ['teach','inspect','complete'].includes(phase) &&
-    palm && now-lastHandAt<250;
+    palm && now-lastHandAt<handHold;
   // Give a newly highlighted name a still moment for the pinch. Deliberate
   // looking resumes gradually even if the hand stays over the same label.
   const settle=aiming && (focusAge<.65 || pinch.target===focusPlant);
@@ -793,7 +830,7 @@ function frame(now){
 
   const listening=['hunt','flight','found'].includes(phase);
   if(present && listening && phase!=='found' && gameTime>=nextEcho)autoEcho();
-  echo+=((listening?1:0)-echo)*(1-Math.exp(-dt*(listening?.65:1.3)));
+  echo+=((listening?1:0)-echo)*(1-Math.exp(-frameSeconds*(listening?.65:1.3)));
   const age=pulse?(gameTime-pulse.at)/1000:-1;
   updatePond(gameTime/1000,echo,age,insect,started?1:0,listening?pulse:null,camera,phase=== 'hunt'?phaseTime/1000:-1,phase,phaseTime/1000,true);
   soundscape(now,listening);
@@ -805,6 +842,7 @@ function frame(now){
   camera.layers.set(submerged?1:0);
   if(!submerged)reflect(renderer,camera,now);
   renderer.render(scene,camera);
+  if(!started)introDrawn=true;
   camera.layers.set(0);
 }
 resize();

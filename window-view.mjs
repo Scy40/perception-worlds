@@ -62,10 +62,10 @@ export class HeadWindow {
     }
   }
 
-  step(dt, now) {
-    if (now - this.lastSeen > HOLD_MS) this.target.set(0, 0, 0);
+  step(dt, now, hold = HOLD_MS) {
+    if (now - this.lastSeen > hold) this.target.set(0, 0, 0);
     const distance = this.position.distanceTo(this.target);
-    const response = now - this.lastSeen > HOLD_MS ? 5 : 7 + 9 * THREE.MathUtils.smoothstep(distance, 0.02, 0.16);
+    const response = now - this.lastSeen > hold ? 5 : 7 + 9 * THREE.MathUtils.smoothstep(distance, 0.02, 0.16);
     const smoothing = 1 - Math.exp(-dt * response);
     for (const [axis, speed] of [['x', 1.52], ['y', 0.98], ['z', 1.02]]) {
       this.position[axis] += THREE.MathUtils.clamp((this.target[axis] - this.position[axis]) * smoothing, -speed * dt, speed * dt);

@@ -53,7 +53,8 @@ const wave = String.raw`
   }
   float crest(vec3 p, float pause) {
     if (uAge < 0.0) return 0.0;
-    return exp(-pow((uAge - arrival(p) - pause) * 8.50, 2.0)) * directionReturn(p);
+    float delta = (uAge - arrival(p) - pause) * 8.50;
+    return exp(-delta * delta) * directionReturn(p);
   }
 `;
 
@@ -103,7 +104,7 @@ const vertexShader = String.raw`
 const fragmentShader = String.raw`
   ${wave}
   uniform vec3 uColor;
-  uniform float uPattern, uReflectionPass, uPaintedLeaf, uWetLeaf;
+  uniform float uPattern, uReflectionPass, uPaintedLeaf, uWetLeaf, uOutlineInEcho;
   uniform sampler2D uReference;
   varying vec3 vP;
   varying vec3 vNormal;
@@ -112,6 +113,10 @@ const fragmentShader = String.raw`
   varying vec2 vTexture;
   void main() {
     if (uReflectionPass > 0.5 && vP.y < -1.421) discard;
+    // The two broad dock leaves cross the flight path. Their traced edges
+    // carry the echo while their daytime surfaces recede from the centre.
+    if (uOutlineInEcho > 0.5 && uEcho > 0.15 &&
+        abs(vTexture.y * 2.0 - 1.0) <= smoothstep(0.15, 0.72, uEcho)) discard;
     vec3 n = normalize(gl_FrontFacing ? vNormal : -vNormal);
     
         vec3 view = normalize(cameraPosition - vP);
@@ -207,11 +212,15 @@ const fragmentShader = String.raw`
   }
 `;
 
-export async function makePond() {
+export function makePond() {
   const scene = new THREE.Scene();
-  const reference = await new THREE.TextureLoader().loadAsync('./assets/sleeping-lotus.png');
-  reference.colorSpace = THREE.SRGBColorSpace;
-  reference.anisotropy = 4;
+  const reference = { value: null }, painted = { value: 0 };
+  new THREE.TextureLoader().load('./assets/sleeping-lotus.png', texture => {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+    reference.value = texture;
+    painted.value = 1;
+  }, undefined, () => console.warn('睡莲贴图未加载，继续使用程序生成的叶色。'));
   const uTime = { value: 0 }, uAge = { value: -1 }, uEcho = { value: 0 };
   const uOrigin = { value: ORIGIN.clone() };
   const uAim = { value: 2 };
@@ -226,7 +235,8 @@ export async function makePond() {
       vertexShader, fragmentShader,
       uniforms: {
         ...shared, uWind: { value: wind }, uColor: { value: new THREE.Color(color) }, uPattern: { value: pattern },
-        uReference: { value: reference }, uPaintedLeaf: { value: paintedLeaf ? 1 : 0 }, uWetLeaf: { value: wetLeaf ? 1 : 0 },
+        uReference: reference, uPaintedLeaf: paintedLeaf ? painted : { value: 0 }, uWetLeaf: { value: wetLeaf ? 1 : 0 },
+        uOutlineInEcho: { value: 0 },
       },
     });
   }
@@ -688,6 +698,7 @@ export async function makePond() {
   const V = (x, y, z) => new THREE.Vector3(x, y, z);
   const roseLeaf = material('#e66f9c', 1, swaying, true);
   const lilacLeaf = material('#d475a6', 1, swaying);
+  roseLeaf.uniforms.uOutlineInEcho.value = lilacLeaf.uniforms.uOutlineInEcho.value = 1;
   const crownPaint = '#d9e8ff';
   blade([
     V(-2.22, -1.14, -2.45), V(-1.52, -0.59, -2.69), V(-0.91, -0.32, -2.98),

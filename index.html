@@ -3,7 +3,7 @@
 <body>
 <canvas id="world" aria-label="睡莲湾三维场景"></canvas><div class="scrim"></div>
 <header><div class="identity"><span class="identity-mark">◉</span>同一空间，不同的感知世界</div></header>
-<section id="intro" class="intro"><h1>睡莲湾</h1><p id="startup" role="status">正在准备睡莲湾…</p><p class="privacy">摄像头画面仅在本机处理</p></section>
+<section id="intro" class="intro"><h1>睡莲湾</h1><p id="startup" role="status">正在加载场景程序…</p><button type="button" id="startupRetry" hidden onclick="location.reload()">重新加载</button><p class="privacy">摄像头画面仅在本机处理</p></section>
 <main id="experience" hidden>
 <aside class="route"><div id="mode">睡莲湾</div><canvas id="map" width="352" height="146" aria-label="路线图，显示当前位置与下一站"></canvas><p id="task"></p><small id="count"></small><div id="backDoor" class="chapterAction">章节菜单</div></aside>
 <div id="marker" hidden><span id="ring"></span><span id="arrow" aria-hidden="true"></span><span id="bubble"></span></div>
@@ -15,4 +15,11 @@
 <div class="chapterAction" id="resumeRun">继续当前体验</div></div></section>
 </main>
 <aside id="cameraPreview" class="camera-preview" hidden><div id="previewDetails"><div id="cameraPicture" class="camera-picture"><video id="camera" autoplay muted playsinline></video><canvas id="trackingOverlay"></canvas></div><div class="camera-legend"><span><i></i>虹膜</span><span><i></i><b id="palmStatus">手掌</b></span></div></div></aside>
-<script src="./boot.js"></script></body></html>
+<script>
+function entryProblem(message) {
+  clearTimeout(window.bootWait);
+  document.getElementById('startup').textContent = message;
+  document.getElementById('startupRetry').hidden = false;
+}
+window.bootWait = setTimeout(() => entryProblem('场景程序加载超时，请重试。'), 15000);
+</script><script async src="./boot.js" onerror="entryProblem('未能下载场景程序，请检查网络后重试。')"></script></body></html>

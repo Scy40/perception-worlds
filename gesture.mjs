@@ -30,8 +30,8 @@ export class EyeAim {
 export class ReachGrab {
   constructor() { this.reset(); }
   reset() { this.opened=false; this.nearAt=-Infinity; this.lastSeen=-Infinity; this.base=Infinity; this.pressAt=null; this.reached=false; }
-  update(joints, aspect, near, now) {
-    if (now-this.lastSeen>350) this.reset();
+  update(joints, aspect, near, now, maxGap=350) {
+    if (!joints || now-this.lastSeen>maxGap) this.reset();
     if (!joints) return null;
     this.lastSeen=now;
     const distance=(a,b)=>Math.hypot((joints[a].x-joints[b].x)*aspect,joints[a].y-joints[b].y);
@@ -43,21 +43,21 @@ export class ReachGrab {
       this.opened=true;
       this.base=Math.min(this.base,span);
       if (near) {
-        if (now-this.nearAt>350) this.entered=now;
+        if (now-this.nearAt>maxGap) this.entered=now;
         this.nearAt=now;
         // A palm already extended toward the camera can settle into the target.
         this.reached=span>this.base*1.055 || now-this.entered>=160;
-      } else if(now-this.nearAt>350) this.reached=false;
+      } else if(now-this.nearAt>maxGap) this.reached=false;
     }
     let action='';
     if (this.opened && straight<=1) {
       this.pressAt??=now;
       if (now-this.pressAt>=55) {
-        action=this.reached && now-this.nearAt<=420?'grab':'miss';
+        action=near && this.reached && this.pressAt-this.nearAt<=Math.max(420,maxGap)?'grab':'miss';
         this.reset();
       }
     } else if(straight>1) this.pressAt=null;
-    return {action,open:straight>=3,ready:this.opened && this.reached && now-this.nearAt<=420};
+    return {action,open:straight>=3,ready:this.opened && this.reached && now-this.nearAt<=Math.max(420,maxGap)};
   }
 }
 // Pinch is edge-triggered. A fresh, visible release rearms it even after tracking loss.
@@ -65,11 +65,12 @@ export class Pinch {
   reset(){this.armed=false;this.since=null;this.last=null;this.target=null;this.duration=55;}
   constructor(){this.reset();}
   progress(now){
-    if(this.since===null || now-this.last>250)return 0;
+    if(this.since===null || now-this.last>this.maxGap)return 0;
     return clamp((now-this.since)/this.duration,0,.98);
   }
-  update(hand,aspect,now,target=true,duration=55){
-    if(!hand || (this.last!==null && now-this.last>250))this.reset();
+  update(hand,aspect,now,target=true,duration=55,maxGap=250){
+    this.maxGap=maxGap;
+    if(!hand || (this.last!==null && now-this.last>maxGap))this.reset();
     if(!hand)return false;
     this.last=now;
     const dist=(a,b)=>Math.hypot((hand[a].x-hand[b].x)*aspect,hand[a].y-hand[b].y);

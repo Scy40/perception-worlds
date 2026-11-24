@@ -11,7 +11,7 @@ self.onmessage=async ({data})=>{
       return;
     }
     const points=kind==='face'?face.detectForVideo(bitmap,now).faceLandmarks[0]:hand.detectForVideo(bitmap,now).landmarks[0];
-    self.postMessage({kind,points,now,generation});
+    self.postMessage({kind,points,now,generation,epoch:data.epoch});
   }catch(error){self.postMessage({error:String(error)});}
   finally{bitmap?.close();}
 };
