@@ -4,9 +4,9 @@ self.onmessage=async ({data})=>{
   const {kind,bitmap,now,generation}=data;
   try{
     if(data.init){
-      const {makeTracker}=await import('./tracking-model.mjs');
-      face=await makeTracker('face');
-      hand=await makeTracker('hand');
+      const {makeTracker}=await import('./tracking-model.mjs?models=parallel');
+      face=await makeTracker('face',data.models.face);
+      hand=await makeTracker('hand',data.models.hand,{preferCPU:data.preferCPU});
       self.postMessage({ready:true});
       return;
     }
