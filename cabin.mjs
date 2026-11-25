@@ -1,14 +1,12 @@
 import * as T from './vendor/three.module.js';
+import { scanDuration, pathX, floorAt, pilotLamp } from './cabin-route.mjs';
+export { scanDuration, pathX, floorAt, pilotLamp };
 
 const V=(x,y,z)=>new T.Vector3(x,y,z);
 const clamp=T.MathUtils.clamp, tau=2*Math.PI;
-export const scanDuration=2.8;
-export const pathX=z=>.82+.31*Math.sin((z+20)*.43);
-export const floorAt=z=>-1.27-4.05*T.MathUtils.smoothstep(-z,17.7,27);
 export const samples=[-29.7,-34.8,-39.2].map(z=>V(-.26,-4.12,z));
 export const flower=samples[0];
 export const tip=samples[1].clone().add(V(.76,.28,.28));
-export const pilotLamp=V(1.02,-.27,-17.8);
 
 function sheet(n,m,fn){
   const verts=[],indices=[];

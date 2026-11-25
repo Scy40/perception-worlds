@@ -212,7 +212,7 @@ const fragmentShader = String.raw`
   }
 `;
 
-export function makePond() {
+export function makePond({ reflections = true, compact = false } = {}) {
   const scene = new THREE.Scene();
   const reference = { value: null }, painted = { value: 0 };
   new THREE.TextureLoader().load('./assets/sleeping-lotus.png', texture => {
@@ -288,7 +288,7 @@ export function makePond() {
   const water = new THREE.Mesh(new THREE.PlaneGeometry(143, 143), new THREE.ShaderMaterial({
     side: THREE.DoubleSide,
     uniforms: {
-      ...shared, uPassage: {value:0}, uReflectedScene: { value: poolReflection.texture }, uReflectionProjection: { value: reflectionProjection },
+      ...shared, uPassage: {value:0}, uReflect: {value:0}, uReflectedScene: { value: poolReflection.texture }, uReflectionProjection: { value: reflectionProjection },
     },
     vertexShader: String.raw`
       varying vec3 vP;
@@ -301,6 +301,7 @@ export function makePond() {
       ${wave}
       uniform float uTime;
       uniform float uPassage;
+      uniform float uReflect;
       uniform sampler2D uReflectedScene;
       uniform mat4 uReflectionProjection;
       varying vec3 vP;
@@ -321,7 +322,7 @@ export function makePond() {
         float specular = pow(max(0.0, r1 * 0.53 + r2 * 0.47), 5.0);
         float shimmer = 0.24 + 0.43 * max(0.0, sin(p.x * 1.42 + 0.5));
         day += vec3(0.27, 0.22, 0.40) * (0.055 * r1 + specular * shimmer);
-        if (uEcho < 0.99) {
+        if (uReflect > 0.5 && uEcho < 0.99) {
           vec4 plane = uReflectionProjection * vec4(vP, 1.0);
           vec2 sampleSpot = plane.xy / (2.0 * plane.w) + 0.5;
           sampleSpot += vec2(r1 * 0.0021 + r2 * 0.0014, r1 * 0.0036);
@@ -347,7 +348,7 @@ export function makePond() {
   scene.add(water);
 
   function reflect(renderer, camera, milliseconds) {
-    if (uEcho.value > 0.86 || milliseconds - reflectedAt < 84) return;
+    if (!reflections || uEcho.value > 0.86 || milliseconds - reflectedAt < 150) return;
     reflectedAt = milliseconds;
     camera.updateMatrixWorld();
     reflectedCamera.position.set(camera.position.x, 2 * WATER - camera.position.y, camera.position.z);
@@ -365,6 +366,7 @@ export function makePond() {
     uReflectionPass.value = 1;
     renderer.setRenderTarget(poolReflection);
     renderer.render(scene, reflectedCamera);
+    water.material.uniforms.uReflect.value = 1;
     renderer.setRenderTarget(target);
     uReflectionPass.value = 0;
     water.visible = true;
@@ -488,7 +490,7 @@ export function makePond() {
     const original = primitive.getAttribute('position');
     const positions = [], normals = [], coordinates = [];
     const point = new THREE.Vector3(), normal = new THREE.Vector3();
-    for (let flower = 0; flower < 6; flower++) {
+    for (let flower = 0; flower < (compact ? 3 : 6); flower++) {
       const around = flower * 2.399;
       const breadth = flower === 0 ? 0.04 : 0.43 + noise(flower + 102) * 0.28;
       const center = new THREE.Vector3(Math.cos(around) * breadth,
@@ -561,7 +563,7 @@ export function makePond() {
   floweringTree(new THREE.Vector3(4.1, -1.0, -7.7), 3.15, 19);
   floweringTree(new THREE.Vector3(-4.1, -0.95, -8.64), 4.0, 24);
 
-  for (let i = 0; i < 214; i++) {
+  for (let i = 0; i < 214; i += compact ? 2 : 1) {
     const theta = noise(i + 91) * Math.PI * 2;
     const offset = 0.18 + noise(i + 56) * 2.75;
     const root = landPoint(theta, offset, 0.15 + offset * 0.09);

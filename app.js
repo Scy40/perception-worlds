@@ -1,5 +1,4 @@
-import { makeTracker } from './assets/tracking-model.mjs';
-import { makeCabin, pilotLamp, pathX, floorAt, scanDuration } from './cabin.mjs';
+import { pilotLamp, pathX, floorAt, scanDuration } from './cabin-route.mjs';
 import * as THREE from './vendor/three.module.js';
 import { ReachGrab, EyeAim, Pinch } from './gesture.mjs';
 import { ECHO_DURATION, makePond, shore } from './pond.mjs';
@@ -9,14 +8,29 @@ const $ = id => document.getElementById(id);
 const video = $('camera');
 const canvas = $('world'), overlay = $('trackingOverlay'), pen = overlay.getContext('2d');
 const startup = window.lotusStartup;
+$('startup').dataset.modules='ready';
 startup.stage('正在绘制湖面和睡莲…','湖面场景准备超时，请重新加载。');
 await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+const compact = matchMedia('(pointer: coarse)').matches || (navigator.hardwareConcurrency || 8) <= 4;
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: !compact, powerPreference: 'low-power' });
+} catch (error) {
+  console.error(error);
+  startup.problem('无法启动 WebGL。请检查浏览器的图形加速，或换用支持 WebGL 2 的浏览器后重试。');
+  throw error;
+}
 const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.07, 110);
 const viewShift = new THREE.Vector3(), desiredShift = new THREE.Vector3();
 const windowView = new WindowProjection(camera);
 const tracker = new HeadWindow();
-const { scene, update: updatePond, info: locate, reflect, steer, targetCount } = makePond();
+const { scene, update: updatePond, info: locate, reflect, steer, targetCount } = makePond({ reflections: !compact, compact });
+canvas.addEventListener('webglcontextlost',event=>{
+  event.preventDefault();
+  releaseCamera();
+  $('intro').hidden=false;
+  startup.problem('图形连接已中断，请重新加载场景。');
+});
 
 const pinch=new Pinch();
 let ringFlashUntil=-Infinity;
@@ -108,8 +122,32 @@ let station=-1, chosenSign=null, scanning=null, focusAge=0;
 const crossSign={name:'',point:new THREE.Vector3(),station:0};
 let anomalyArrow;
 const returnSign={name:'回到过道',point:new THREE.Vector3(),station:-1};
-function enterHouse(){
-  house??=makeCabin(scene);house.open();house.arrange();
+let cabinLoad, cabinAttempts=0, enteringHouse=false;
+function loadCabin(){
+  if(!cabinLoad){
+    const attempt=cabinAttempts++;
+    cabinLoad=withTimeout(import(attempt?'./cabin.mjs?retry='+attempt:'./cabin.mjs'),30000)
+      .catch(error=>{cabinLoad=null;throw error;});
+  }
+  return cabinLoad;
+}
+async function enterHouse(){
+  if(enteringHouse)return;
+  enteringHouse=true;
+  $('intro').hidden=false;
+  startup.stage('正在准备第二幕 · 水下温室…','温室加载超时，请重试。',32000);
+  try{
+    const {makeCabin}=await loadCabin();
+    house??=makeCabin(scene);
+  }catch(error){
+    console.warn(error);
+    startup.problem('温室加载失败，请检查网络后重试。',enterHouse);
+    return;
+  }finally{enteringHouse=false;}
+  startup.done();$('intro').hidden=true;
+  house.open();house.arrange();
+  try{localStorage.setItem('lotus-bay:glasshouse','1');}catch{}
+  saved=true;
   resetFocus();station=-1;scanning=chosenSign=null;pulse=null;echo=0;
   explorer.set(pathX(-18),0,-18);insect.copy(pilotLamp);
   headingTo(plantPoint(house.teacher));yaw=turnTo;pitch=tiltTo;
@@ -415,15 +453,23 @@ function silence() {
 
 let trackingWorker, pendingFrame=false, lastSample=-Infinity;
 let fallbackTracking=false;
+let trackingAttempts=0;
+function withTimeout(promise,ms){
+  let timeout;
+  return Promise.race([promise,new Promise((_,reject)=>{
+    timeout=setTimeout(()=>reject(Error('Timed out')),ms);
+  })]).finally(()=>clearTimeout(timeout));
+}
 
 async function prepareTracking(){
   if(trackingWorker || (face && hand))return;
+  const attempt=trackingAttempts++;
   if(!fallbackTracking && typeof Worker==='function' && typeof createImageBitmap==='function'){
     let worker;
     try{
-      worker=new Worker('./assets/tracking-worker.js');
+      worker=new Worker('./assets/tracking-worker.js?attempt='+attempt);
       await new Promise((resolve,reject)=>{
-        const timeout=setTimeout(()=>reject(Error('Tracker startup timed out')),20000);
+        const timeout=setTimeout(()=>reject(Error('Tracker startup timed out')),60000);
         worker.onmessage=({data})=>{clearTimeout(timeout);data.ready?resolve():reject(Error(data.error));};
         worker.onerror=e=>{clearTimeout(timeout);reject(Error(e.message));};
         worker.postMessage({init:true});
@@ -440,8 +486,26 @@ async function prepareTracking(){
     }catch(error){worker?.terminate();console.warn('Background tracking unavailable',error);}
   }
   fallbackTracking=true;
-  startup.stage('正在加载本机识别模型…','本机识别模型加载超时，请检查网络后重试。',45000);
-  [face,hand]=await Promise.all([makeTracker('face'),makeTracker('hand')]);
+  startup.stage('正在加载本机识别模型…','识别模型加载较慢，正在尝试完成…',60000);
+  const {makeTracker}=await import('./assets/tracking-model.mjs?attempt='+attempt);
+  let expired=false;
+  const create=kind=>makeTracker(kind).then(model=>{
+    if(expired){model.close();throw Error('Tracker initialization expired');}
+    return model;
+  });
+  const pending=Promise.allSettled([create('face'),create('hand')]);
+  let results;
+  try{results=await withTimeout(pending,60000);}
+  catch(error){
+    expired=true;
+    pending.then(items=>{for(const item of items)item.value?.close();});
+    throw error;
+  }
+  if(results.some(result=>result.status==='rejected')){
+    for(const result of results)result.value?.close();
+    throw Error('Tracker initialization failed');
+  }
+  [face,hand]=results.map(result=>result.value);
 }
 function useFallback(){
   trackingWorker?.terminate();trackingWorker=null;pendingFrame=false;fallbackTracking=true;
@@ -450,7 +514,7 @@ function useFallback(){
 
 function resize() {
   introDrawn=false;
-  renderer.setPixelRatio(Math.min(devicePixelRatio,1.15));
+  renderer.setPixelRatio(Math.min(devicePixelRatio,compact?.8:1,Math.sqrt(1500000/(innerWidth*innerHeight))));
   renderer.setSize(innerWidth,innerHeight,false);
   windowView.setViewport(innerWidth,innerHeight);
 }
@@ -488,28 +552,45 @@ function releaseCamera(){
   headYaw=headTilt=0;anchored=false;lastVideo=-1; $('cameraPreview').hidden=true;
 }
 async function startCamera(){
-  if(cameraBusy||stream||document.hidden)return;
+  if(cameraBusy||document.hidden)return;
   cameraBusy=true; const request=++generation;
-  startup.stage('湖面已就绪，请允许摄像头访问。','仍在等待摄像头，请检查地址栏中的摄像头权限，或重新加载。');
+  let step='camera';
   try{
-    const acquired=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:'user'},audio:false});
-    if(request!==generation){acquired.getTracks().forEach(t=>t.stop());return;}
-    startup.stage('正在连接摄像头画面…','摄像头画面连接超时，请检查设备后重试。');
-    stream=acquired;video.srcObject=acquired;await video.play();
-    startup.stage('正在加载眼部与手掌识别…','识别模型加载超时，请检查网络后重试。',45000);
-    await prepareTracking();
+    if(!stream){
+      startup.stage('湖面已就绪，请允许摄像头访问。','请在浏览器的摄像头提示中选择允许。');
+      let expired=false;
+      const permission=navigator.mediaDevices.getUserMedia({video:{width:{ideal:compact?480:640},height:{ideal:compact?360:480},facingMode:'user'},audio:false}).then(acquired=>{
+        if(expired || request!==generation){acquired.getTracks().forEach(t=>t.stop());throw Error('Camera request expired');}
+        return acquired;
+      });
+      stream=await withTimeout(permission,45000).finally(()=>{expired=true;});
+      video.srcObject=stream;
+      await withTimeout(video.play(),15000);
+      const acquired=stream;
+      acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，请重新连接后重试。');});
+    }
+    step='models';
+    startup.stage('正在加载眼部与手掌识别…','正在下载识别模型，慢速网络下需要更多时间。',25000);
+    await withTimeout(prepareTrackingOnce(),125000);
     if(request!==generation)return;
     startup.done();fitPreview(); $('cameraPreview').hidden=false; startupProblem='';
-    acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，重新连接后将自动继续。');});
-    if(!started){begin();if(new URLSearchParams(location.search).get('start')==='greenhouse')enterHouse();else if(saved)openMenu(true);}
     $('intro').hidden=true;$('experience').hidden=false;
+    if(!started){begin();if(new URLSearchParams(location.search).get('start')==='greenhouse')enterHouse();else if(saved)openMenu(true);}
   }catch(e){
-    if(request===generation)cameraProblem(e.name==='NotAllowedError'?'请在浏览器地址栏允许摄像头访问，授权后将自动进入。':e.name==='NotFoundError'?'请连接摄像头，连接后会自动进入。':e.name==='NotReadableError'?'摄像头被占用，请关闭其他占用它的程序。':'识别暂时不可用，正在重新连接…');
+    if(request!==generation)return;
+    if(step==='models'){
+      console.warn(e);
+      startup.problem('眼手识别加载失败或超时，请检查网络后重试识别。',startCamera);
+    }else cameraProblem(e.name==='NotAllowedError'?'请在浏览器地址栏允许摄像头访问，再点击重试。':e.name==='NotFoundError'?'请连接摄像头，再点击重试。':'摄像头连接失败或超时，请检查设备后重试。',false);
   }finally{cameraBusy=false;}
 }
-function cameraProblem(text){
-  releaseCamera();startupProblem=text;retryAt=performance.now()+6000;
-  startup.problem(text);$('intro').hidden=false;$('experience').hidden=true;
+let trackingLoad;
+function prepareTrackingOnce(){
+  return trackingLoad??=prepareTracking().finally(()=>{trackingLoad=null;});
+}
+function cameraProblem(text,auto=true){
+  releaseCamera();startupProblem=text;retryAt=auto?performance.now()+6000:Infinity;
+  startup.problem(text,startCamera);$('intro').hidden=false;$('experience').hidden=true;
 }
 document.addEventListener('visibilitychange',()=>{
   visibilityEpoch++;lastFrame=performance.now();resetTracking();
@@ -521,8 +602,12 @@ function palmCenter(joints){
 }
 function distanceTo(point){return screen&&point?Math.hypot((point.x-screen.x)*innerWidth,(point.y-screen.y)*innerHeight):Infinity;}
 function track(now){
-  if(!stream||cameraBusy||pendingFrame||video.readyState<2||video.currentTime===lastVideo)return;
-  if(now-lastSample<(trackingWorker?32:60))return;
+  if(trackingWorker && pendingFrame && now-lastSample>6000){
+    useFallback();
+    return;
+  }
+  if(!stream||cameraBusy||(!trackingWorker&&!(face&&hand))||pendingFrame||video.readyState<2||video.currentTime===lastVideo)return;
+  if(now-lastSample<(trackingWorker?(compact?55:32):85))return;
   lastSample=now;lastVideo=video.currentTime;faceNext=!faceNext;
   const kind=faceNext?'face':'hand';
   if(trackingWorker){
@@ -598,6 +683,7 @@ function catchAvailable(){return phase==='hunt'&&phaseTime>=900;}
 function startFlight(){
   flightStart.copy(insect);
   routeStop++;
+  if(routeStop===targetCount)loadCabin().catch(console.warn);
   destination.copy(routeStop<targetCount?locate(routeStop).point:pilotLamp);
   changePhase('flight');
 }
@@ -652,14 +738,13 @@ function advanceBay(dt){
     waypoint.copy(insect);waypoint.z+=3.05;waypoint.y=0;
     explorer.lerp(waypoint,1-Math.exp(-dt*2));steer(explorer);headingTo(insect);
     if(t===1){
-      if(routeStop===targetCount){house??=makeCabin(scene);house.open();changePhase('end');}
+      if(routeStop===targetCount)changePhase('end');
       else {optionalWait=0;changePhase('hunt');}
     }
   }else if(phase==='end'){
     waypoint.set(pathX(-18),0,-18);explorer.lerp(waypoint,1-Math.exp(-dt*1.35));
     if(explorer.z< -17.65 && phaseTime>2200){
-      try{localStorage.setItem('lotus-bay:glasshouse','1');}catch{}
-      saved=true;enterHouse();note(0,912,.18,.16);
+      if(!enteringHouse && $('intro').hidden){enterHouse();note(0,912,.18,.16);}
     }
   }
 }
@@ -725,7 +810,8 @@ function showRecord(){
 }
 function drawUI(now,dt,present){
   const marker=$('marker'),handVisible=present&&palm;
-  $('tracking').textContent=present?'':facePoints?'请看屏幕中央，保持一瞬':'请让脸回到画面中';
+  const trackingHint=present?'':facePoints && tracker.status(now)==='calibrating'?'正在校准视线，请看屏幕中央':'已暂停，正在等待人脸识别';
+  if($('tracking').textContent!==trackingHint)$('tracking').textContent=trackingHint;
   $('palm').hidden=!handVisible;
   if(handVisible){$('palm').style.left=palm.x*100+'%';$('palm').style.top=palm.y*100+'%';}
   $('palm').classList.toggle('holding',phase==='found');
@@ -798,12 +884,13 @@ function frame(now){
   if(now-lastHandAt>=handHold){palm=null;ready=false;detector.reset();pinch.reset();releaseSince=heldOpen=0;}
   const pos=tracker.step(dt,now,faceHold);
   if(menu){
+    $('tracking').textContent=present?'':'正在等待人脸识别，请看向屏幕中央';
     drawPinchRing(now,controlAt(palm));
     $('palm').hidden=!present||!palm;
     if(palm){$('palm').style.left=palm.x*100+'%';$('palm').style.top=palm.y*100+'%';}
     return;
   }
-  if(present){
+  if(present && !enteringHouse && $('intro').hidden){
     // Keep route time in real seconds even when rendering or CPU inference is slow.
     let remaining=frameSeconds;
     while(remaining>0){
@@ -840,7 +927,7 @@ function frame(now){
   scene.fog=submerged?house.waterFog:null;
   if(house?.room.visible)house.tick(present?dt:0,gameTime);
   camera.layers.set(submerged?1:0);
-  if(!submerged)reflect(renderer,camera,now);
+  if(started && present && !submerged && !compact)reflect(renderer,camera,now);
   renderer.render(scene,camera);
   if(!started)introDrawn=true;
   camera.layers.set(0);
