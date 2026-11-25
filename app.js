@@ -454,6 +454,20 @@ function silence() {
 let trackingWorker, pendingFrame=false, lastSample=-Infinity;
 let fallbackTracking=false;
 let trackingAttempts=0;
+let modelDownload;
+function getModelFiles(){
+  if(!modelDownload){
+    const attempt=trackingAttempts++;
+    modelDownload=import('./assets/tracking-model.mjs?models=parallel&attempt='+attempt)
+      .then(async module=>{
+        const controller=new AbortController();
+        const timeout=setTimeout(()=>controller.abort(),35000);
+        try{return {module,models:await module.downloadModels(controller.signal)};}
+        finally{clearTimeout(timeout);controller.abort();}
+      }).catch(error=>{modelDownload=null;throw error;});
+  }
+  return modelDownload;
+}
 function withTimeout(promise,ms){
   let timeout;
   return Promise.race([promise,new Promise((_,reject)=>{
@@ -463,16 +477,17 @@ function withTimeout(promise,ms){
 
 async function prepareTracking(){
   if(trackingWorker || (face && hand))return;
-  const attempt=trackingAttempts++;
+  const {module,models}=await getModelFiles();
+  startup.stage('正在启动眼动与手势识别…','设备正在初始化识别，请稍候。');
   if(!fallbackTracking && typeof Worker==='function' && typeof createImageBitmap==='function'){
     let worker;
     try{
-      worker=new Worker('./assets/tracking-worker.js?attempt='+attempt);
+      worker=new Worker('./assets/tracking-worker.js?models=parallel');
       await new Promise((resolve,reject)=>{
-        const timeout=setTimeout(()=>reject(Error('Tracker startup timed out')),60000);
+        const timeout=setTimeout(()=>reject(Error('Tracker startup timed out')),12000);
         worker.onmessage=({data})=>{clearTimeout(timeout);data.ready?resolve():reject(Error(data.error));};
         worker.onerror=e=>{clearTimeout(timeout);reject(Error(e.message));};
-        worker.postMessage({init:true});
+        worker.postMessage({init:true,models,preferCPU:compact});
       });
       trackingWorker=worker;
       worker.onerror=useFallback;
@@ -486,16 +501,24 @@ async function prepareTracking(){
     }catch(error){worker?.terminate();console.warn('Background tracking unavailable',error);}
   }
   fallbackTracking=true;
-  startup.stage('正在加载本机识别模型…','识别模型加载较慢，正在尝试完成…',60000);
-  const {makeTracker}=await import('./assets/tracking-model.mjs?attempt='+attempt);
+  startup.stage('正在兼容模式中启动识别…','兼容模式仍在初始化，请稍候。');
+  const {makeTracker}=module;
   let expired=false;
-  const create=kind=>makeTracker(kind).then(model=>{
+  const create=kind=>makeTracker(kind,models[kind],{preferCPU:compact}).then(model=>{
     if(expired){model.close();throw Error('Tracker initialization expired');}
     return model;
   });
-  const pending=Promise.allSettled([create('face'),create('hand')]);
+  const pending=(async()=>{
+    const results=[];
+    for(const kind of ['face','hand']){
+      if(expired)break;
+      try{results.push({status:'fulfilled',value:await create(kind)});}
+      catch(error){results.push({status:'rejected',reason:error});break;}
+    }
+    return results;
+  })();
   let results;
-  try{results=await withTimeout(pending,60000);}
+  try{results=await withTimeout(pending,18000);}
   catch(error){
     expired=true;
     pending.then(items=>{for(const item of items)item.value?.close();});
@@ -557,6 +580,7 @@ async function startCamera(){
   let step='camera';
   try{
     if(!stream){
+      getModelFiles().catch(()=>{});
       startup.stage('湖面已就绪，请允许摄像头访问。','请在浏览器的摄像头提示中选择允许。');
       let expired=false;
       const permission=navigator.mediaDevices.getUserMedia({video:{width:{ideal:compact?480:640},height:{ideal:compact?360:480},facingMode:'user'},audio:false}).then(acquired=>{
@@ -570,19 +594,26 @@ async function startCamera(){
       acquired.getVideoTracks()[0].addEventListener('ended',()=>{if(stream===acquired)cameraProblem('摄像头已断开，请重新连接后重试。');});
     }
     step='models';
-    startup.stage('正在加载眼部与手掌识别…','正在下载识别模型，慢速网络下需要更多时间。',25000);
-    await withTimeout(prepareTrackingOnce(),125000);
+    startup.stage('正在并行下载眼动与手势模型…','识别模型仍在下载，请稍候。',12000);
+    await withTimeout(prepareTrackingOnce(),69000);
     if(request!==generation)return;
     startup.done();fitPreview(); $('cameraPreview').hidden=false; startupProblem='';
     $('intro').hidden=true;$('experience').hidden=false;
-    if(!started){begin();if(new URLSearchParams(location.search).get('start')==='greenhouse')enterHouse();else if(saved)openMenu(true);}
+    if(!started)enterExperience();
   }catch(e){
     if(request!==generation)return;
     if(step==='models'){
       console.warn(e);
-      startup.problem('眼手识别加载失败或超时，请检查网络后重试识别。',startCamera);
+      releaseCamera();
+      startup.problem('眼动与手势识别未能启动，请点击重试识别。',startCamera);
+      $('startupRetry').textContent='重试识别';
     }else cameraProblem(e.name==='NotAllowedError'?'请在浏览器地址栏允许摄像头访问，再点击重试。':e.name==='NotFoundError'?'请连接摄像头，再点击重试。':'摄像头连接失败或超时，请检查设备后重试。',false);
   }finally{cameraBusy=false;}
+}
+function enterExperience(){
+  begin();
+  if(new URLSearchParams(location.search).get('start')==='greenhouse')enterHouse();
+  else if(saved)openMenu(true);
 }
 let trackingLoad;
 function prepareTrackingOnce(){
@@ -594,7 +625,8 @@ function cameraProblem(text,auto=true){
 }
 document.addEventListener('visibilitychange',()=>{
   visibilityEpoch++;lastFrame=performance.now();resetTracking();
-  if(document.hidden){silence();audio?.suspend();}else{if(started)ensureAudio();if(!stream)startCamera();}
+  if(document.hidden){silence();audio?.suspend();}
+  else{if(started)ensureAudio();if(!stream)startCamera();}
 });
 window.addEventListener('pagehide',()=>{releaseCamera();trackingWorker?.terminate();face?.close();hand?.close();audio?.close();});
 function palmCenter(joints){
