@@ -1,5 +1,20 @@
 const clamp = (x, low, high) => Math.max(low, Math.min(high, x));
 
+// Map a comfortable working area below the eyes to the full view.
+// Use the neutral face so looking around does not move the hand cursor.
+export function handCursor(joints, neutral, aspect){
+  const palm=[0,5,9,13,17].reduce((point,i)=>({
+    x:point.x+(1-joints[i].x)/5, y:point.y+joints[i].y/5
+  }),{x:0,y:0});
+  if(!neutral)return palm;
+  const shift=clamp(neutral.width*aspect*.72,.10,.23);
+  const centerY=Math.min(.77,neutral.y+shift);
+  return {
+    x:clamp(.5+(palm.x-(1-neutral.x))*1.55,.02,.98),
+    y:clamp(.5+(palm.y-centerY)*1.8,.02,.98)
+  };
+}
+
 // Estimate screen direction from each iris relative to its own eyelids.
 export class EyeAim {
   constructor() { this.reset(); }
@@ -29,35 +44,48 @@ export class EyeAim {
 
 export class ReachGrab {
   constructor() { this.reset(); }
-  reset() { this.opened=false; this.nearAt=-Infinity; this.lastSeen=-Infinity; this.base=Infinity; this.pressAt=null; this.reached=false; }
+  reset() {
+    this.opened=false; this.nearAt=-Infinity; this.lastSeen=-Infinity;
+    this.pressAt=null; this.reached=false; this.extension=0;this.held=false;
+  }
   update(joints, aspect, near, now, maxGap=350) {
     if (!joints || now-this.lastSeen>maxGap) this.reset();
     if (!joints) return null;
     this.lastSeen=now;
     const distance=(a,b)=>Math.hypot((joints[a].x-joints[b].x)*aspect,joints[a].y-joints[b].y);
-    const span=(distance(5,17)+distance(0,9))/2;
-    const straight=[[8,6],[12,10],[16,14],[20,18]].filter(([tip,joint])=>distance(tip,0)>distance(joint,0)*1.10).length;
-    if (straight>=3) {
+    const ratios=[[8,6],[12,10],[16,14],[20,18]].map(([tip,joint])=>distance(tip,0)/Math.max(.01,distance(joint,0)));
+    const extension=ratios.reduce((sum,ratio)=>sum+ratio,0)/ratios.length;
+    const open=ratios.filter(ratio=>ratio>1.10).length>=3;
+    if(this.held){
+      if(!open||extension<this.extension-.065)return {action:'',open:false,ready:false};
+      this.reset();
+      return {action:'',open:true,ready:false};
+    }
+    const cupped=this.opened && this.extension-extension>=.11 &&
+      ratios.filter(ratio=>ratio<1.14).length>=3;
+    if (open && !cupped) {
       this.pressAt=null;
-      if (!this.opened) this.base=span;
       this.opened=true;
-      this.base=Math.min(this.base,span);
       if (near) {
-        if (now-this.nearAt>maxGap) this.entered=now;
+        if (now-this.nearAt>maxGap) {
+          this.entered=now;
+          this.extension=0;
+        }
         this.nearAt=now;
-        // A palm already extended toward the camera can settle into the target.
-        this.reached=span>this.base*1.055 || now-this.entered>=160;
+        this.extension=Math.max(this.extension,extension);
+        this.reached=now-this.entered>=120;
       } else if(now-this.nearAt>maxGap) this.reached=false;
     }
     let action='';
-    if (this.opened && straight<=1) {
+    if (cupped) {
       this.pressAt??=now;
       if (now-this.pressAt>=55) {
         action=near && this.reached && this.pressAt-this.nearAt<=Math.max(420,maxGap)?'grab':'miss';
-        this.reset();
+        if(action==='grab')this.held=true;
+        else this.reset();
       }
-    } else if(straight>1) this.pressAt=null;
-    return {action,open:straight>=3,ready:this.opened && this.reached && now-this.nearAt<=Math.max(420,maxGap)};
+    } else this.pressAt=null;
+    return {action,open:open&&!cupped,ready:!this.held&&this.opened&&this.reached&&now-this.nearAt<=Math.max(420,maxGap)};
   }
 }
 // Pinch is edge-triggered. A fresh, visible release rearms it even after tracking loss.

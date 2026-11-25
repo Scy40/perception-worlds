@@ -207,7 +207,7 @@ export function makeCabin(scene){
     const bed=new T.Mesh(new T.CylinderGeometry(.355,.35,.025,36),soil);bed.position.y=-.012;group.add(bed);
     const timeline=paths.flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance);
     const length=timeline[timeline.length-1].distance;
-    function reading(samples,color,size,offset){
+    function reading(samples,color,size,offset,localDistance=false){
       const geo=new T.BufferGeometry();
       const coords=samples.flatMap(s=>s.point.toArray());
       geo.setAttribute('position',new T.Float32BufferAttribute(coords,3));
@@ -216,23 +216,25 @@ export function makeCabin(scene){
         shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>',
           '#include <color_fragment>\nif(distance(gl_PointCoord,vec2(.5))>.5)discard;');
       };
-      const cloud=new T.Points(geo,mat);cloud.position.x=offset;cloud.renderOrder=7;group.add(cloud);
-      const arrival=samples.map(sample=>sample.distance/length);
-      return function reveal(t,opacity){
+      const cloud=new T.Points(geo,mat);cloud.position.x=offset;cloud.renderOrder=7;cloud.visible=false;group.add(cloud);
+      const start=localDistance?samples[0].distance:0;
+      const span=localDistance?Math.max(.001,samples.at(-1).distance-start):length;
+      const arrival=samples.map(sample=>(sample.distance-start)/span);
+      return function reveal(t,opacity,x=offset){
         cloud.visible=t>=0;
         if(!cloud.visible)return;
         let count=0;
         if(t>=1)count=arrival.length;
         else while(count<arrival.length&&arrival[count]<=t)count++;
-        geo.setDrawRange(0,count);mat.opacity=opacity;
+        geo.setDrawRange(0,count);mat.opacity=opacity;cloud.position.x=x;
       };
     }
     const previous=reading(paths.filter(p=>p.newGrowth!==true).flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance),
       0xe2ded7,.018,-.026);
     const baseline=paths.filter(p=>!p.newGrowth).flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance);
     const growth=paths.filter(p=>p.newGrowth===true).flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance);
-    const current=reading(baseline,0x77ffe1,.022,.012);
-    const highlight=growth.length?reading(growth,0xffac54,.039,.012):null;
+    const current=reading(baseline,0x9beeff,.021,.012);
+    const highlight=growth.length?reading(growth,0xffac54,.039,.012,true):null;
     group.traverse(o=>o.layers.enable(1));
     const plant={group,kind,extra,demo,target,finding:extra?findings[kind]:null,
       drawComparison(canvas){
@@ -246,18 +248,32 @@ export function makeCabin(scene){
         ctx.clearRect(0,0,canvas.width,h);ctx.lineWidth=1.8;ctx.lineJoin='round';
         for(const column of [0,1])for(const path of paths){
           if(column===0?path.newGrowth===true:path.newGrowth==='past')continue;
-          ctx.strokeStyle=column===0?'#d0d6d3':path.newGrowth?'#ffba71':'#89edce';
+          ctx.strokeStyle=column===0?'#d0d6d3':path.newGrowth?'#ffc273':extra?'#86a4b5':'#9beeff';
+          ctx.lineWidth=column===1&&path.newGrowth?2.6:1.6;
           ctx.beginPath();path.samples.forEach(({point},i)=>{
             ctx[i?'lineTo':'moveTo']((column+.5)*w+(xOf(point)-(hi+lo)/2)*scale,h-5-point.y*scale);
           });ctx.stroke();
         }
       },scanned:false,marked:false,age:Infinity,
+      clearReading(){
+        this.age=Infinity;
+        previous(-1,0);current(-1,0);highlight?.(-1,0);
+      },
       show(dt){
         this.age+=dt;
         const t=Number.isFinite(this.age)?this.age:-1;
-        previous(t/1.08,t<1.08?.93:.63);
-        current((t-.94)/(scanDuration-.94),.98);
-        highlight?.((t-.94)/(scanDuration-.94),1);
+        const align=T.MathUtils.smoothstep(t,.85,1.85);
+        previous(t/.85,extra?.73:.88-.58*align,extra?-.024:-.044*(1-align)-.007);
+        if(extra){
+          // First establish the shared outline, then trace only the changed area.
+          const reveal=(t-1.32)/(scanDuration-1.32);
+          const pulse=.82+.18*Math.sin(Math.PI*clamp(reveal,0,1));
+          current((t-.55)/.88,.64-.37*T.MathUtils.smoothstep(t,1.12,1.65),.012);
+          highlight?.(reveal,pulse);
+        }else{
+          // A normal scan registers the whole new outline against the old one.
+          current(t>=.85?1:-1,.94*align,.085*(1-align)+.003);
+        }
       }};
     pots.push(plant);return plant;
   }
@@ -454,10 +470,19 @@ const bedLights=[];
     sh.fragmentShader='uniform float radarAge;varying float radarDistance;\n'+sh.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nif(distance(gl_PointCoord,vec2(.5))>.48)discard;float wave=radarAge*12.;diffuseColor.rgb*=radarDistance>wave?.18:1.;diffuseColor.rgb+=vec3(.3,.7,.8)*exp(-8.*abs(radarDistance-wave));');
   };
   const cloud=new T.Points(radarGeo,radarMat);cloud.layers.enable(1);radar.add(cloud);radar.visible=false;
-  function scanAt(point){origin.value.copy(point);age.value=0;radar.visible=true;exterior.visible=false;for(const obj of solids)obj.visible=false;}
+  function scanAt(point){
+    for(const p of pots)p.clearReading();
+    origin.value.copy(point);age.value=0;radar.visible=true;exterior.visible=false;
+    for(const obj of solids)obj.visible=false;
+  }
+  function restoreView(){
+    radar.visible=false;exterior.visible=true;
+    for(const obj of solids)obj.visible=true;
+  }
   function tick(dt,now){time.value=now*.001;age.value+=dt;
     lamp.color.setRGB(1,.73+.09*Math.sin(now*.003),.34);
     for(const p of pots)if(Number.isFinite(p.age) && p.age<=scanDuration+5)p.show(dt);
+    if(radar.visible && age.value>4.05)restoreView();
     if(!exterior.visible)return;
     for(let i=0;i<air.length;i++){
       const [x,h,z,r]=air[i],f=(h+time.value*.085)%1;
@@ -476,6 +501,9 @@ const bedLights=[];
   function reset(){room.visible=false;}
   const waterFog=new T.FogExp2(0x487d89,.063);
   const passage=scene.getObjectByName('lake-surface')?.material.uniforms.uPassage;
-  function open(){radar.visible=false;exterior.visible=true;for(const obj of solids)obj.visible=true;room.visible=true;lamp.color.setHex(0xffdc91);if(passage)passage.value=1;}
-  reset();return {room,pots,teacher,bedLights,radar,scanAt,arrange,tick,open,waterFog,reset(){reset();if(passage)passage.value=0;}};
+  function open(){restoreView();room.visible=true;lamp.color.setHex(0xffdc91);if(passage)passage.value=1;}
+  function restartSurvey(){
+    for(const p of pots){p.scanned=p.marked=false;p.clearReading();}
+  }
+  reset();return {room,pots,teacher,bedLights,radar,scanAt,arrange,tick,open,restoreView,restartSurvey,waterFog,reset(){reset();if(passage)passage.value=0;}};
 }

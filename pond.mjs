@@ -1008,14 +1008,15 @@ export function makePond({ reflections = true, compact = false } = {}) {
     const response = guidePhase === 'end' ? amount : guidePhase === 'found' ? 1 : guidePhase === 'flight'
       ? Math.max(departure, pulse?.kind === 'passage' ? afterglow : 0) : afterglow * (wingExposed ? 1 : 0.48);
     const daylight = (guidePhase==='daylight' || guidePhase==='end' || guidePhase==='idle' ? visible : 0) * (1 - amount);
-    const searching = ['hunt','found','flight'].includes(guidePhase);
+    const searching = ['hunt','found','flight','nightfall'].includes(guidePhase);
     const returnVisible = searching || (confirmed && response > 0);
     const perched=guidePhase==='hunt'&&phaseAge>=.9;
     let intensity=daylight;
     if(guidePhase==='hunt')intensity=perched?.93+.07*Math.sin(seconds*3):.48+.15*Math.cos(seconds*7);
+    if(guidePhase==='nightfall')intensity=.42-.30*THREE.MathUtils.smoothstep(amount,.48,1);
     if(guidePhase==='flight')intensity=.44+.14*Math.sin(seconds*7)+.20*THREE.MathUtils.smoothstep(phaseAge,3.3,4.4);
     if(guidePhase==='descent')intensity=.70+.08*Math.sin(seconds*5);
-    if(guidePhase==='teach')intensity=.48*(1-THREE.MathUtils.smoothstep(phaseAge,0,2.4));
+    if(guidePhase==='observe')intensity=.48*(1-THREE.MathUtils.smoothstep(phaseAge,0,2.4));
     bug.visible = intensity > 0.014;
     returnAccent.visible = searching && guidePhase!=='found' && firstReturn>.05;
     if (bug.visible) {
