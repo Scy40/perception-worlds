@@ -1,7 +1,7 @@
 import { pilotLamp, pathX, floorAt, scanDuration } from './cabin-route.mjs';
 import * as THREE from './vendor/three.module.js';
 import { ReachGrab, EyeAim, Pinch, handCursor } from './gesture.mjs?survey=2';
-import { ECHO_DURATION, makePond, shore } from './pond.mjs?survey=2';
+import { ECHO_DURATION, makePond, shore } from './pond.mjs?survey=3';
 import { eyeCenter, HeadWindow, WindowProjection, quietLook, followAngle } from './window-view.mjs';
 
 const $ = id => document.getElementById(id);
@@ -58,7 +58,7 @@ let screen=null,palm=null,ready=false,lockUntil=0,missUntil=0,feedback='',noteUn
 let cameraBusy=false, retryAt=0, startupProblem='', generation=0;
 let introDrawn=false;
 
-const tasks={daylight:'跟随萤火虫',hunt:'张手靠近，合手接住萤火虫',found:'张开手，让它带路',nightfall:'夜色遮住前方水岸',flight:'循着回声与光迹前进',end:'前往巡检灯',descent:'沿玻璃坡道进入水下温室',observe:'先看铃兰的外形',teach:'扫描并比对铃兰',choose:'自由选择下一处花台',walk:'沿步道前往花台',inspect:'每个花台归档一处发现',complete:'自由探索'};
+const tasks={daylight:'沿湖看日落',firstEcho:'听第一声回声',discovery:'发现萤火虫',hunt:'张手靠近，合手接住萤火虫',found:'张开手，让它带路',flight:'循着回声与光迹前进',end:'前往巡检灯',descent:'沿玻璃坡道进入水下温室',observe:'先看铃兰的外形',teach:'扫描并比对铃兰',choose:'自由选择下一处花台',walk:'沿步道前往花台',inspect:'每个花台归档一处发现',complete:'自由探索'};
 function headingTo(target){
   const dx=target.x-explorer.x,dz=target.z-explorer.z;
   const angle=Math.atan2(-dx,-dz)-yaw;
@@ -127,7 +127,7 @@ let cabinLoad, cabinAttempts=0, enteringHouse=false;
 function loadCabin(){
   if(!cabinLoad){
     const attempt=cabinAttempts++;
-    cabinLoad=withTimeout(import('./cabin.mjs?survey=2&attempt='+attempt),30000)
+    cabinLoad=withTimeout(import('./cabin.mjs?survey=6&attempt='+attempt),30000)
       .catch(error=>{cabinLoad=null;throw error;});
   }
   return cabinLoad;
@@ -139,7 +139,7 @@ async function enterHouse(){
   startup.stage('正在准备第二幕 · 水下温室…','温室加载超时，请重试。',32000);
   try{
     const {makeCabin}=await loadCabin();
-    house??=makeCabin(scene);
+    house??=makeCabin(scene,{compact});
   }catch(error){
     console.warn(error);
     startup.problem('温室加载失败，请检查网络后重试。',enterHouse);
@@ -190,7 +190,7 @@ function confirmHouse(){
   const p=focusPlant;
   if(!p || !['teach','inspect','complete'].includes(phase) || (p.demo && p.scanned))return;
   if(p.scanned && p.extra && !p.marked){markPlant(p);return;}
-  scanning=p;house.scanAt(plantPoint(p));p.age=0;scanSound();
+  scanning=p;house.scanAt(explorer,p);p.age=0;scanSound();
 }
 function progressHouse(dt){
   const atEntrance=['descent','observe','teach'].includes(phase);
@@ -206,7 +206,7 @@ function progressHouse(dt){
     insect.y+=.30*t+.45*Math.sin(t*Math.PI);
     if(t>=.999)changePhase('observe');
   }
-  if(phase==='observe'&&phaseTime>=2400)changePhase('teach');
+  if(phase==='observe'&&phaseTime>=3600)changePhase('teach');
   if(phase==='walk'&&Math.abs(dest-explorer.z)<.05){
     if(station>=0){
       const right=new THREE.Vector3(explorer.z-aim.z,0,aim.x-explorer.x).normalize();
@@ -221,15 +221,14 @@ function progressHouse(dt){
   if(scanning&&scanning.age>=scanDuration){
     viewed=scanning;scanning.scanned=true;
     if(scanning.extra){
-      signalText(scanning.finding[0]+(scanning.marked?' · 已归档':' · 再捏归档'));
-      note(0,740,.14,.08);note(.18,990,.18,.08);
+      signalText('变异警示 · '+scanning.finding[0]+(scanning.marked?' · 已归档':' · 再捏归档'));
     }else{
-      signalText(scanning.kind+' · 两次轮廓一致');
+      signalText(scanning.kind+' · 与上次记录相符');
       note(0,615,.19,.085,0,.995);
     }
     scanning=null;
   }
-  if(phase==='teach'&&house.teacher.scanned&&house.teacher.age>4.15){
+  if(phase==='teach'&&house.teacher.scanned&&!house.radar.visible){
     house.restoreView();resetFocus();focusAge=0;changePhase('choose');
   }
 }
@@ -283,7 +282,7 @@ function observeBeds(dt){
 
 function showAnomalyHint(dt){
   anomalyArrow.hidden=true;
-  if(!['inspect','complete'].includes(phase)||scanning)return;
+  if(!['inspect','complete'].includes(phase)||scanning||house.radar.visible)return;
   const plant=focusPlant||viewed;
   if(!plant?.scanned || !plant.extra || plant.station!==station)return;
   const tip=projectTarget(plant.group.localToWorld(plant.target.clone()));
@@ -306,8 +305,16 @@ function drawPinchRing(now,target){
 }
 
 function scanSound(){
-  const tones=[520,810,1160,1250,1390,860];
-  [0,.18,.34,.40,.46,.72].forEach((t,i)=>note(t,tones[i],.055,.054,(i-2.5)*.14,.96));
+  note(0,265,.14,.13,0,1.25);
+  note(.14,670,.11,.10,0,1.28);
+}
+function playScanCue({pitch,duration,bend,position,warning}){
+  let pan=0;
+  if(position){
+    const dx=position.x-camera.position.x,dz=position.z-camera.position.z;
+    pan=clamp((dx*Math.cos(yaw)-dz*Math.sin(yaw))/Math.max(.4,Math.hypot(dx,dz)),-.70,.70);
+  }
+  note(0,pitch,duration,warning?.20:.10,pan,bend);
 }
 function fitPreview() {
   if (!video.videoWidth || !video.videoHeight) return;
@@ -369,7 +376,11 @@ enableSound?.addEventListener('click',ensureAudio);
 function makeHabitat() {
   const mix = audio.createGain();
   mix.gain.value = 0;
-  mix.connect(gain);
+  const waterFilter=audio.createBiquadFilter();
+  waterFilter.type='lowpass';
+  waterFilter.frequency.value=5800;
+  mix.connect(waterFilter);
+  waterFilter.connect(gain);
   const bed = audio.createBuffer(2, Math.floor(audio.sampleRate * 5.4), audio.sampleRate);
   for (let c = 0; c < 2; c++) {
     const samples = bed.getChannelData(c);
@@ -404,12 +415,12 @@ function makeHabitat() {
   bedLayer('bandpass', 1580, 0.22, 0.71, 0.102, 1.31, 0.19);
   bedLayer('bandpass', 810, 0.18, 0.14, 0.108, 2.03, -0.52);
   bedLayer('bandpass', 2980, 0.097, 0.41, 0.059, 3.20, 0.47);
-  return { mix, water, mode: '', lastPan: -Infinity };
+  return { mix, water, waterFilter, mode: '', lastPan: -Infinity };
 }
 
 function soundscape(now, listening) {
   if (!habitat || !audio || audio.state !== 'running') return;
-  const mode = !started ? 'quiet' : listening ? 'dark' : greenhousePhase() && explorer.y < -1.42 ? 'submerged' : 'day';
+  const mode = !started?'quiet':house?.radar.visible&&greenhousePhase()?'scanning':greenhousePhase()&&explorer.y<-1.42?'submerged':listening?'dark':'day';
   if (mode === 'day' && now - habitat.lastPan > 160) {
     const dockX = -1.6 - explorer.x, dockZ = -5.7 - explorer.z;
     const side = (dockX * Math.cos(yaw) - dockZ * Math.sin(yaw)) / Math.max(1, Math.hypot(dockX, dockZ));
@@ -418,8 +429,10 @@ function soundscape(now, listening) {
   }
   if (mode !== habitat.mode) {
     habitat.mode = mode;
-    habitat.mix.gain.setTargetAtTime(mode === 'day' ? 0.79 : mode === 'dark' ? 0.085 : mode==='submerged'?.20:0,
-      audio.currentTime, mode === 'dark' ? 0.13 : 0.42);
+    habitat.waterFilter.frequency.setTargetAtTime(mode==='submerged'?960:mode==='scanning'?650:5800,
+      audio.currentTime,.30);
+    habitat.mix.gain.setTargetAtTime(mode==='day'?.79:mode==='dark'?.085:mode==='submerged'?.20:mode==='scanning'?.072:0,
+      audio.currentTime, mode==='dark'||mode==='scanning'?.13:.42);
     if (mode === 'day') nextBird = now + 1800 + Math.random() * 3200;
   }
   if (mode === 'day' && now > nextBird && soundOn) {
@@ -557,8 +570,7 @@ function changePhase(next,now=gameTime) {
   if(next!=='found')detector.reset();
   feedback=''; noteUntil=0;
   $('mode').textContent=greenhousePhase()?'水下观测舱':
-    phase==='nightfall'||phase==='found'&&routeStop===0?'日常视角 · 暮色':
-    ['end','daylight'].includes(phase)||phase==='hunt'&&routeStop===0?'日常视角 · 睡莲湾':'蝙蝠 · 自动回声';
+    ['end','daylight'].includes(phase)?'日常视角 · 睡莲湾':'蝙蝠 · 自动回声';
   $('task').textContent=phase==='hunt'&&routeStop>0?'可再捕捉，也可跟随':tasks[phase]||'';
   $('mode').textContent=greenhousePhase()?'温室 · 激光巡检':$('mode').textContent;
   $('count').textContent=greenhousePhase()?recordCount():'已捧起 '+foundCount+' 次';
@@ -720,18 +732,11 @@ function applyTracking(kind,points,now){
   drawPreview();
 }
 function catchAvailable(){return phase==='hunt'&&phaseTime>=900;}
-const nightfallDuration=1650;
-const nightfallStart=new THREE.Vector3(),nightfallTarget=new THREE.Vector3();
-let duskStart=0;
+const sunsetDuration=21000;
+const sunsetView=new THREE.Vector3(-9,1.6,-34);
+const discoveryStart=new THREE.Vector3(1.75,-.79,-5.55);
 function echoActive(){
-  return phase==='flight'||routeStop>0&&['hunt','found'].includes(phase);
-}
-function releaseFirefly(){
-  if(routeStop>0){startFlight();return;}
-  nightfallStart.copy(insect);
-  duskStart=echo;
-  nightfallTarget.copy(locate(1).point).lerp(nightfallStart,.60);
-  changePhase('nightfall');
+  return ['firstEcho','discovery','hunt','found','flight'].includes(phase);
 }
 function startFlight(){
   flightStart.copy(insect);
@@ -763,9 +768,26 @@ function underPalm(depth){
 }
 function advanceBay(dt){
   if(phase==='daylight'){
-    const t=THREE.MathUtils.smoothstep(phaseTime,1500,5200);
-    insect.set(.52+.65*Math.sin(t*Math.PI),.14+.11*Math.sin(gameTime*.0015),-2.65).lerp(locate(0).point,t);
-    if(phaseTime>=5200)changePhase('hunt');
+    const travel=THREE.MathUtils.smoothstep(phaseTime,0,sunsetDuration-800);
+    explorer.set(1.05*travel,.14*Math.sin(Math.PI*travel),-1.92*travel);
+    headingTo(sunsetView);
+    if(phaseTime>=sunsetDuration+1000){
+      insect.copy(locate(0).point);
+      echo=1;
+      changePhase('firstEcho');
+      nextEcho=gameTime;
+    }
+  }else if(phase==='firstEcho'){
+    if(pulse && gameTime-pulse.at>=Math.max(2100,(pulse.marker.delay+1.0)*1000)){
+      insect.copy(discoveryStart);
+      changePhase('discovery');
+    }
+  }else if(phase==='discovery'){
+    const t=THREE.MathUtils.smoothstep(phaseTime,0,2700);
+    insect.lerpVectors(discoveryStart,locate(0).point,t);
+    insect.y+=.37*Math.sin(Math.PI*t);
+    headingTo(insect);
+    if(phaseTime>=2700)changePhase('hunt');
   }else if(phase==='hunt'){
     waypoint.copy(locate(routeStop).point);
     const settle=1-THREE.MathUtils.smoothstep(phaseTime,0,900);
@@ -785,16 +807,11 @@ function advanceBay(dt){
     if(palm){
       handGone=0;insect.lerp(underPalm(1.5),1-Math.exp(-dt*12));
     }else handGone+=dt;
-    if(phaseTime>520 && (heldOpen>=.1||handGone>.95))releaseFirefly();
-  }else if(phase==='nightfall'){
-    const t=THREE.MathUtils.smoothstep(phaseTime,0,nightfallDuration);
-    insect.lerpVectors(nightfallStart,nightfallTarget,t);
-    headingTo(insect);
-    if(phaseTime>=nightfallDuration)startFlight();
+    if(phaseTime>520 && (heldOpen>=.1||handGone>.95))startFlight();
   }else if(phase==='flight'){
     const t=clamp(phaseTime/4400,0,1);
     insect.lerpVectors(flightStart,destination,t*t*(3-2*t));insect.y+=.44*Math.sin(Math.PI*t);
-    waypoint.copy(insect);waypoint.z+=3.05;waypoint.y=0;
+    waypoint.copy(insect);waypoint.z=Math.min(explorer.z,waypoint.z+3.05);waypoint.y=0;
     explorer.lerp(waypoint,1-Math.exp(-dt*2));steer(explorer);headingTo(insect);
     if(t===1){
       if(routeStop===targetCount)changePhase('end');
@@ -863,9 +880,9 @@ function showRecord(){
   $('scanRecord').hidden=!visible;
   if(!visible || drawnRecord===p)return;
   drawnRecord=p;
-  $('scanName').textContent=p.kind+' · '+(p.finding?.[0]||'轮廓吻合');
-  $('scanDetail').textContent=p.finding?.[1]||'两次记录的轮廓一致。';
-  p.drawComparison($('scanPair'));
+  $('scanRecord').classList.toggle('anomaly',p.extra);
+  $('scanName').textContent=p.kind+' · '+(p.extra?'变异警示':'记录相符');
+  $('scanDetail').textContent=p.finding?.[1]||'这株植物的形态与上次扫描相符。';
 }
 function drawUI(now,dt,present){
   if(enableSound)enableSound.hidden=audio?.state!=='suspended';
@@ -884,33 +901,38 @@ function drawUI(now,dt,present){
     if(anomalyArrow)anomalyArrow.hidden=true;
     focusPlant=chosenSign=null;focusAge=0;return;
   }
-  if(greenhousePhase())observeBeds(dt);
+  if(greenhousePhase()){
+    $('mode').textContent=house.radar.visible?'激光雷达 · 点云视野':'温室 · 日常视野';
+    observeBeds(dt);
+  }
   showRecord();
   drawPinchRing(now,greenhousePhase() && (controlAt(palm)||houseTarget()));
   const target=chosenSign?.point||(focusPlant?plantPoint(focusPlant):insect);
   screen=projectTarget(target);
   let hint='';
-  if(phase==='daylight')hint='沿着湖面，跟上那只萤火虫';
+  if(phase==='daylight')hint=phaseTime<8500?'用目光看看湖岸和花园':phaseTime<sunsetDuration?'看远岸的夕阳落下':'夜色落定，听一听';
+  if(phase==='firstEcho')hint='听回声掠过水面，叶缘和岸线短暂显形';
+  if(phase==='discovery')hint='水边有一点光，跟着它看';
   if(phase==='hunt')hint=!catchAvailable()?'它正在落下':ready?'手指轻轻合拢，像捧住一点光':gameTime<missUntil?'再张开手，让掌心光标靠近它':
     routeStop===0?'手放在脸侧或胸前，把掌心光标移近萤火虫':'再捧一次，或放下手跟它走';
   if(phase==='found')hint='移动掌心带着它走 · 张开手放飞';
-  if(phase==='nightfall')hint='只剩一点萤光，前面的水岸看不清了';
   if(phase==='flight')hint=routeStop===1&&phaseTime<2500?'蝙蝠用回声辨认水岸 · 跟着回声与光迹走':'跟着光迹，听回声掠过湖面';
   if(phase==='end'||phase==='descent')hint='沿着萤光，跟随步道下潜';
-  if(phase==='observe')hint='先观察铃兰的外形。眼前的样子很难看出它和上次有什么差别。';
-  if(phase==='teach')hint=house.teacher.scanned?'冷青色与旧轮廓重合 · 铃兰和上次一样':scanning?'灰白是上次 · 冷青色是本次扫描':focusPlant===house.teacher?'拇指和食指轻捏，光环合拢即扫描':'手放低一些 · 把掌心光标移近「铃兰」';
+  if(phase==='observe')hint=phaseTime<1600?'先看铃兰的枝头':'水纹掠过花瓣 · 确认它和上次记录是否一样';
+  if(phase==='teach')hint=house.teacher.scanned?'铃兰与上次记录相符':scanning?house.scanStage():focusPlant===house.teacher?'拇指和食指轻捏，启动激光雷达头盔':'手放低一些 · 把掌心光标移近「铃兰」';
   if(phase==='choose')hint=chosenSign?'轻捏前往'+chosenSign.name:'选择花台';
   if(phase==='walk')hint=station<0?'返回过道':'前往'+stationNames[station];
   if(['inspect','complete'].includes(phase)){
-    if(scanning)hint='正在比对上次轮廓 · '+scanning.kind;
+    if(scanning)hint=house.scanStage();
     else if(chosenSign)hint='轻捏'+chosenSign.name;
     else if(focusPlant)hint=focusPlant.scanned && focusPlant.extra && !focusPlant.marked?'再捏归档':'轻捏'+(focusPlant.scanned?'重看':'扫描')+focusPlant.kind;
     else hint=phase==='complete'?'自由探索 · 轻捏植物扫描':'先看植物外形，再轻捏扫描确认变化';
   }
+  if(house?.radar.visible&&greenhousePhase()&&!scanning)hint=house.scanStage();
   if(gameTime<noteUntil)hint=feedback;
   $('guideText').textContent=hint;
   $('guideText').classList.toggle('pinchDemo',phase==='teach'&&!scanning&&!house.teacher.scanned);
-  const related=phase==='hunt'||phase==='flight'||phase==='end'||phase==='descent';
+  const related=['discovery','hunt','flight','end','descent'].includes(phase);
   if(related){
     marker.hidden=false;
     marker.className=[screen.inside?'':'edge',ready?'ready':'',phase==='flight'?'flying':''].join(' ');
@@ -961,9 +983,13 @@ function frame(now){
     }
   }
   const indoors=greenhousePhase();
-  const gaze=eyes.point,eyeWeight=indoors?1:(ready||phase==='found'?.15:.42);
-  const lookYaw=quietLook(headYaw,.10,1.45)+quietLook(.5-(gaze?.x??.5),.09,.46)*1.55*eyeWeight;
-  const lookPitch=quietLook(headTilt,.055,.48)+quietLook(.5-(gaze?.y??.5),.07,.45)*.95*eyeWeight;
+  const gaze=eyes.point;
+  const touring=phase==='daylight'||phase==='firstEcho';
+  const eyeWeight=indoors?1:touring?1.05:(ready||phase==='found'?.15:.42);
+  const gazeRange=phase==='firstEcho'?.53:touring?1-0.47*THREE.MathUtils.smoothstep(phaseTime,7600,10500):1;
+  const headWeight=touring?.09:1;
+  const lookYaw=headWeight*quietLook(headYaw,.10,1.45)+gazeRange*quietLook(.5-(gaze?.x??.5),.09,.46)*1.55*eyeWeight;
+  const lookPitch=headWeight*quietLook(headTilt,.055,.48)+gazeRange*quietLook(.5-(gaze?.y??.5),.07,.45)*.95*eyeWeight;
   const aiming=indoors && focusPlant && !scanning && ['teach','inspect','complete'].includes(phase) &&
     palm && now-lastHandAt<handHold;
   // Give a newly highlighted name a still moment for the pinch. Deliberate
@@ -978,18 +1004,21 @@ function frame(now){
   windowView.viewFrom(viewShift,yaw,pitch,explorer);camera.updateMatrixWorld();
 
   const listening=echoActive();
-  if(present && listening && phase!=='found' && gameTime>=nextEcho)autoEcho();
-  if(phase==='found'&&routeStop===0)echo=.68*THREE.MathUtils.smoothstep(phaseTime,0,1700);
-  else if(phase==='nightfall')echo=THREE.MathUtils.lerp(duskStart,1,THREE.MathUtils.smoothstep(phaseTime,0,nightfallDuration));
-  else if(present)echo+=((listening?1:0)-echo)*(1-Math.exp(-frameSeconds*(listening?2.3:1.3)));
+  if(present && listening && !['found','discovery'].includes(phase) && gameTime>=nextEcho &&
+      (phase!=='firstEcho'||!pulse))autoEcho();
+  const dusk=phase==='daylight'?clamp((phaseTime-4300)/(sunsetDuration-4300),0,1):0;
+  if(phase==='daylight')echo=THREE.MathUtils.smoothstep(dusk,.48,1);
+  else if(present)echo+=((listening||phase==='end'||phase==='descent'?1:0)-echo)*(1-Math.exp(-frameSeconds*2.3));
   const age=pulse?(gameTime-pulse.at)/1000:-1;
-  updatePond(gameTime/1000,echo,age,insect,started?1:0,listening?pulse:null,camera,phase=== 'hunt'?phaseTime/1000:-1,phase,phaseTime/1000,true);
-  soundscape(now,listening||echo>.48);
-  if(started)drawUI(now,dt,present);
-
+  updatePond(gameTime/1000,echo,age,insect,started?1:0,listening?pulse:null,camera,phase=== 'hunt'?phaseTime/1000:-1,phase,phaseTime/1000,true,dusk);
   const submerged=greenhousePhase() && explorer.y < -1.65;
   scene.fog=submerged?house.waterFog:null;
-  if(house?.room.visible)house.tick(present?dt:0,gameTime);
+  if(house?.room.visible){
+    house.setObservation(phase==='observe'||phase==='teach'&&!house.teacher.scanned&&!scanning);
+    house.tick(present?frameSeconds:0,gameTime,playScanCue);
+  }
+  soundscape(now,listening||echo>.48);
+  if(started)drawUI(now,dt,present);
   camera.layers.set(submerged?1:0);
   if(started && present && !submerged && !compact)reflect(renderer,camera,now);
   renderer.render(scene,camera);

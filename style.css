@@ -48,8 +48,8 @@ h1{font:400 58px SimSun,serif;margin:0}.privacy,.camera-legend,#count{font-size:
 
 
 /* A sample annotation follows the tip of the tissue that changed. */
-.anomalyArrow{position:fixed;z-index:4;pointer-events:none;transform:translate(15px,-100%);padding:4px 9px;color:#ffe7bd;background:#35251bed;border:1px solid #f3b874;border-radius:12px;font-size:clamp(12px,1vw,16px);white-space:nowrap}
-.anomalyArrow::before{content:"";position:absolute;left:-23px;bottom:-8px;width:14px;height:14px;border:2px solid #ffbf73;border-radius:50%;box-shadow:0 0 12px #ffae56}
+.anomalyArrow{position:fixed;z-index:4;pointer-events:none;transform:translate(15px,-100%);padding:4px 9px;color:#e8cdd3;background:#2b3439de;border:1px solid #b17f8a;border-radius:12px;font-size:clamp(12px,1vw,16px);white-space:nowrap}
+.anomalyArrow::before{content:"";position:absolute;left:-23px;bottom:-8px;width:14px;height:14px;border:1px solid #c8949f;border-radius:50%;box-shadow:0 0 8px #c8949f55}
 .anomalyArrow[hidden]{display:none}
 
 .plantLabel.returnControl{transform:translate(-50%,0);padding:10px 16px;border-color:#e7c48a;background:#25313eee;z-index:5}
@@ -68,10 +68,12 @@ h1{font:400 58px SimSun,serif;margin:0}.privacy,.camera-legend,#count{font-size:
 @keyframes target-breathe{to{box-shadow:0 0 9px 2px #ffe3a277;opacity:.55}}
 #palm.ringDone::after{background:#aef6db;box-shadow:0 0 10px #aef6db}
 .plantLabel{border-radius:12px;padding:5px 10px}
-.plantLabel.discovery{border:1px solid #ffc879;color:#ffe0ae;background:#402b1bf2}
-.plantLabel.discovery.selected{background:#ffe0aa;color:#352719}
+.plantLabel.discovery{border:1px solid #b78e9a;color:#eed8df;background:#352b38f2}
+.plantLabel.discovery.selected{background:#dec1ca;color:#302630}
 @media(prefers-reduced-motion:reduce){#arrow,#palm.onTarget::before{animation:none}}
 
+#scanRecord.anomaly{border-color:#ac7883;color:#ead4d9}
+#scanRecord.anomaly #scanName{color:#d6a2ad}
 #scanRecord{position:fixed;top:11vh;left:3vw;width:clamp(172px,20vw,265px);padding:12px;border:1px solid #8ab6a377;border-radius:12px;background:#15262ded;color:#e5efe9;pointer-events:none;z-index:2}
-#scanName{font-size:14px}.readings{display:flex;text-align:center;font-size:11px;color:#bdccc6;margin-top:7px}.readings span{flex:1}#scanPair{display:block;width:100%;height:auto;background:linear-gradient(to right,transparent 49.7%,#80988c55 50%,transparent 50.3%)}#scanDetail{margin:5px 0 0;font-size:12px;line-height:1.5}
-@media(max-height:520px){#scanRecord{top:3vh;left:21vw;width:174px;padding:6px}#scanPair{height:42px;object-fit:contain}}
+#scanName{font-size:14px}#scanDetail{margin:5px 0 0;font-size:12px;line-height:1.5}
+@media(max-height:520px){#scanRecord{top:3vh;left:21vw;width:174px;padding:6px}}

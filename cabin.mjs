@@ -17,10 +17,12 @@ function sheet(n,m,fn){
   const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(verts,3));
   g.setIndex(indices);g.computeVertexNormals();return g;
 }
-export function makeCabin(scene){
+export function makeCabin(scene,{compact=false}={}){
   const room=new T.Group(),exterior=new T.Group();
   scene.add(room);room.add(exterior);
-  const time={value:0},age={value:9},origin={value:flower.clone()};
+  const time={value:0},age={value:9},origin={value:flower.clone()},scanBlend={value:0};
+  const observation={value:0},observationTarget={value:V(-.69,-4.05,-29.15)};
+  let observing=false;
   let seed=4287;
   const rand=()=>((seed=(Math.imul(seed,1664525)+1013904223)>>>0)/4294967296);
   const caustic=`
@@ -33,10 +35,21 @@ export function makeCabin(scene){
     const mat=new T.MeshStandardMaterial({color,metalness,roughness,side:T.DoubleSide});
     mat.onBeforeCompile=sh=>{
       sh.uniforms.waterTime=time;
+      sh.uniforms.scanBlend=scanBlend;
+      sh.uniforms.observation=observation;
+      sh.uniforms.observationTarget=observationTarget;
       sh.vertexShader='varying vec3 waterPos;\n'+sh.vertexShader.replace('#include <worldpos_vertex>',
         '#include <worldpos_vertex>\nvec4 waterVertex=vec4(transformed,1.);\n#ifdef USE_INSTANCING\nwaterVertex=instanceMatrix*waterVertex;\n#endif\nwaterPos=(modelMatrix*waterVertex).xyz;');
-      sh.fragmentShader='varying vec3 waterPos; uniform float waterTime;\n'+caustic+'\n'+sh.fragmentShader.replace('#include <opaque_fragment>',
-        `outgoingLight+=vec3(.13,.31,.28)*lattice(waterPos.xz+waterPos.y*vec2(.43,.35),waterTime)*smoothstep(1.,5.,-waterPos.y);\n#include <opaque_fragment>`);
+      sh.fragmentShader='varying vec3 waterPos; uniform float waterTime, scanBlend, observation; uniform vec3 observationTarget;\n'+caustic+'\n'+sh.fragmentShader.replace('#include <opaque_fragment>',
+        `outgoingLight+=vec3(.13,.31,.28)*lattice(waterPos.xz+waterPos.y*vec2(.43,.35),waterTime)*smoothstep(1.,5.,-waterPos.y);
+        vec3 fromPlant=waterPos-observationTarget;
+        float onFlower=1.-smoothstep(.25,.91,length(fromPlant*vec3(1.,.81,1.)));
+        float ripple=pow(.5+.5*sin(waterPos.y*18.+waterPos.x*7.+waterTime*2.2),5.);
+        float glare=onFlower*ripple*observation*(1.-scanBlend);
+        outgoingLight=mix(outgoingLight,vec3(.48,.73,.68),glare*.53);
+        vec3 shadow=vec3(.003,.008,.027)+outgoingLight*vec3(.065,.10,.23);
+        outgoingLight=mix(outgoingLight,shadow,scanBlend);
+        #include <opaque_fragment>`);
     };return mat;
   }
   const alloy=finish(0x89a8ab,.42), enamel=finish(0x254653,.3), bronze=finish(0xb19876,.45), deck=finish(0x809ca0,.16);
@@ -99,41 +112,41 @@ export function makeCabin(scene){
     '披针叶草':['基部丛芽','上次是五片高叶；本次叶基多出一团密集的短芽。']
   };
   const soil=finish(0x344e48), fern=finish(0x65af85), midrib=finish(0xb5cc89), bell=finish(0xf3ded5);
+  const warpedLeaf=finish(0x678580), warpedRib=finish(0x867c8e);
+  const sweepSpeed=8.6;
+  const warningCues={
+    '鹿角蕨':[[.27,.73,425,.32,1.53]],
+    '羽叶蕨':[[.19,.49,680,.16,.89],[.76,.52,475,.22,.78]],
+    '铃兰':[[.16,.38,780,.12,.96],[.81,.42,593,.17,.94]],
+    '披针叶草':[[.12,.31,360,.12,.91],[.48,.31,325,.13,.89],[.92,.41,287,.18,.83]]
+  };
   const pots=[];
   function specimen(kind,extra,demo=false){
-    const group=new T.Group(), paths=[];
+    const group=new T.Group();
     room.add(group);
     const target=V(0,.47,0);
-    function part(geometry,material){group.add(new T.Mesh(geometry,material));}
-
-    // Each branch picks up the pulse where it joins an older stem.
-    function trace(curve,newGrowth=false){
-      const points=curve.getSpacedPoints(Math.max(8,Math.ceil(curve.getLength()*86)));
-      let join=0, nearest=Infinity;
-      for(const path of paths)for(const sample of path.samples){
-        const gap=sample.point.distanceTo(points[0]);
-        if(gap<nearest){nearest=gap;join=sample.distance+gap;}
-      }
-      if(points[0].y<.05)join=0;
-      let distance=join;
-      const samples=points.map((point,i)=>{
-        if(i)distance+=point.distanceTo(points[i-1]);
-        return {point,distance};
-      });
-      paths.push({samples,newGrowth});
-      if(newGrowth===true)target.copy(points[points.length-1]);
+    function part(geometry,material,changed=false,warningBand=0){
+      const piece=new T.Mesh(geometry,material);
+      piece.userData.changed=changed;
+      piece.userData.warningBand=warningBand;
+      group.add(piece);
     }
+
     function stem(pts,r,m=midrib,newGrowth=false){
       const curve=new T.CatmullRomCurve3(pts.map(p=>V(...p)));
-      part(new T.TubeGeometry(curve,48,r,7,false),m);trace(curve,newGrowth);
+      part(new T.TubeGeometry(curve,48,r,7,false),m,newGrowth);
     }
-    function blade(x,y,dx,dy,w,newGrowth=false,z=.02){
+    function blade(x,y,dx,dy,w,newGrowth=false,z=.02,warningBand=0){
       function surface(t,s){
         const side=(s-.5)*2*w*Math.pow(Math.sin(Math.PI*t),.62);
-        return [x+dx*t+side,y+dy*t-side*dx*.55,z+.085*Math.sin(t*Math.PI)+.024*(1-Math.abs(s*2-1))];
+        const twist=newGrowth===true?1.25*Math.sin(t*3.5):0;
+        const curl=newGrowth===true?.09*t*t*Math.sin(t*4.5):0;
+        return [x+dx*t+side*Math.cos(twist),y+dy*t-side*dx*.55+curl,
+          z+.085*Math.sin(t*Math.PI)+.024*(1-Math.abs(s*2-1))+side*Math.sin(twist)];
       }
-      if(newGrowth!=='past')part(sheet(16,4,surface),fern);
-      trace(new T.CatmullRomCurve3(Array.from({length:21},(_,i)=>V(...surface(i/20,.5)))),newGrowth);
+      if(newGrowth==='past')return;
+      part(sheet(16,4,surface),newGrowth?warpedLeaf:fern,newGrowth,warningBand);
+      if(newGrowth)target.set(...surface(.72,.5));
     }
     if(kind==='鹿角蕨'){
       for(const side of [-1,1]){
@@ -145,30 +158,27 @@ export function makeCabin(scene){
       if(extra){
         // A broad corrugated fan replaces the two terminal lobes.
         function fan(t,u){
-          const breadth=.022+.24*t;
-          return [.17+.12*t+u*breadth,.42+t*(.38+.055*Math.cos(u*Math.PI*4)),.03+.06*t*Math.cos(u*Math.PI*4)];
+          const edge=1-u*u;
+          const folds=Math.cos(u*Math.PI*4);
+          return [.17+.21*t+u*(.018+.25*t),.42+t*(.15+.17*edge-.06*u+.030*folds),
+            .03+t*(.08+.045*edge+.062*u)+.05*Math.sin(t*Math.PI)+.029*t*folds];
         }
-        part(sheet(18,40,(t,s)=>fan(t,2*s-1)),fern);
-        for(let j=0;j<=8;j++){
-          const rib=j/4-1;
-          trace(new T.CatmullRomCurve3([0,.35,.7,1].map(t=>V(...fan(t,rib)))),true);
-        }
-        trace(new T.CatmullRomCurve3(Array.from({length:41},(_,i)=>V(...fan(1,i/20-1)))),true);
-        target.set(...fan(1,0));
+        part(sheet(18,40,(t,s)=>fan(t,2*s-1)),warpedLeaf,true);
+        target.set(...fan(.8,0));
       }
     }else if(kind==='羽叶蕨'){
       for(const side of [-1,1]){
         const curled=extra && side===1;
         const axis=new T.CatmullRomCurve3([V(0,0,0),V(side*.06,.24,0),V(side*.16,.47,.025),V(side*.27,.64,.035)]);
-        if(curled)trace(axis,'past');else{part(new T.TubeGeometry(axis,30,.015,7,false),midrib);trace(axis);}
+        if(!curled)part(new T.TubeGeometry(axis,30,.015,7,false),midrib);
         for(let j=0;j<6;j++){
           const y=.12+j*.078,x=side*(.025+j*.032);
           for(const wing of [-1,1])blade(x,y,wing*(.16-j*.018),.10,.026,curled?'past':false,.025);
         }
       }
       if(extra){
-        const arc=new T.CatmullRomCurve3([V(0,0,0),V(.09,.29,.03),V(.28,.48,.06),V(.47,.37,.09),V(.44,.17,.10),V(.31,.14,.10)]);
-        part(new T.TubeGeometry(arc,42,.017,8,false),midrib);trace(arc,true);
+        const arc=new T.CatmullRomCurve3([V(0,0,0),V(.09,.29,.03),V(.28,.48,.06),V(.53,.36,.16),V(.46,.13,.24),V(.29,.12,.21)]);
+        part(new T.TubeGeometry(arc,42,.017,8,false),warpedRib,true);
         for(let i=1;i<=7;i++){
           const t=i/8,at=arc.getPoint(t),dir=arc.getTangent(t);
           for(const wing of [-1,1])blade(at.x,at.y,.06*dir.x+wing*.095*dir.y,.06*dir.y-wing*.095*dir.x,.026,true,at.z);
@@ -178,9 +188,9 @@ export function makeCabin(scene){
     }else if(kind==='披针叶草'){
       for(let j=0;j<5;j++)blade(0,.01,(j-2)*.085,.48+(.12*(j%2)),.04);
       if(extra){
-        for(let j=0;j<13;j++){
-          const angle=j*2.4,x=.19+.05*Math.cos(angle),h=.13+.07*(1+Math.sin(j*1.8));
-          blade(x,0,Math.cos(angle)*.13,h,.034,true,.11+.07*Math.sin(angle));
+        for(let j=0;j<11;j++){
+          const angle=j*2.4,r=.035+.006*j,h=.10+.11*(1-j/13)+.034*Math.sin(j*1.8);
+          blade(.19+r*Math.cos(angle),.016,Math.cos(angle)*.085,h,.024,true,.11+r*Math.sin(angle));
         }
         target.set(.20,.24,.12);
       }
@@ -193,88 +203,17 @@ export function makeCabin(scene){
         const replaced=extra && j>=2;
         const bellSurface=(t,s)=>{const a=s*tau,r=.045*(.18+Math.sin(t*1.9)+.28*t**4);return [x+.09+r*Math.cos(a),y-.082*t+.007*t**3*Math.cos(6*a),r*Math.sin(a)];};
         if(!replaced)part(sheet(10,20,bellSurface),bell);
-        for(const edge of [0,.5]){
-          trace(new T.CatmullRomCurve3([0,.35,.7,1].map(t=>V(...bellSurface(t,edge)))),replaced?'past':false);
-        }
         if(replaced){
-          blade(x+.09,y+.01,.23,.14,.075,true);
-          blade(x+.09,y+.01,-.13,.17,.06,true);
+          blade(x+.09,y+.01,.23,.14,.075,true,.02,j-2);
+          blade(x+.09,y+.01,-.13,.17,.06,true,.02,j-2);
         }
       }
     }
     const tray=new T.Mesh(new T.CylinderGeometry(.39,.30,.16,40),alloy);tray.position.y=-.10;group.add(tray);
     const foot=new T.Mesh(new T.CylinderGeometry(.13,.18,.54,20),enamel);foot.position.y=-.41;group.add(foot);
     const bed=new T.Mesh(new T.CylinderGeometry(.355,.35,.025,36),soil);bed.position.y=-.012;group.add(bed);
-    const timeline=paths.flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance);
-    const length=timeline[timeline.length-1].distance;
-    function reading(samples,color,size,offset,localDistance=false){
-      const geo=new T.BufferGeometry();
-      const coords=samples.flatMap(s=>s.point.toArray());
-      geo.setAttribute('position',new T.Float32BufferAttribute(coords,3));
-      const mat=new T.PointsMaterial({color,size,transparent:true,depthWrite:false,depthTest:false});
-      mat.onBeforeCompile=shader=>{
-        shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>',
-          '#include <color_fragment>\nif(distance(gl_PointCoord,vec2(.5))>.5)discard;');
-      };
-      const cloud=new T.Points(geo,mat);cloud.position.x=offset;cloud.renderOrder=7;cloud.visible=false;group.add(cloud);
-      const start=localDistance?samples[0].distance:0;
-      const span=localDistance?Math.max(.001,samples.at(-1).distance-start):length;
-      const arrival=samples.map(sample=>(sample.distance-start)/span);
-      return function reveal(t,opacity,x=offset){
-        cloud.visible=t>=0;
-        if(!cloud.visible)return;
-        let count=0;
-        if(t>=1)count=arrival.length;
-        else while(count<arrival.length&&arrival[count]<=t)count++;
-        geo.setDrawRange(0,count);mat.opacity=opacity;cloud.position.x=x;
-      };
-    }
-    const previous=reading(paths.filter(p=>p.newGrowth!==true).flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance),
-      0xe2ded7,.018,-.026);
-    const baseline=paths.filter(p=>!p.newGrowth).flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance);
-    const growth=paths.filter(p=>p.newGrowth===true).flatMap(p=>p.samples).sort((a,b)=>a.distance-b.distance);
-    const current=reading(baseline,0x9beeff,.021,.012);
-    const highlight=growth.length?reading(growth,0xffac54,.039,.012,true):null;
-    group.traverse(o=>o.layers.enable(1));
     const plant={group,kind,extra,demo,target,finding:extra?findings[kind]:null,
-      drawComparison(canvas){
-        const ctx=canvas.getContext('2d'),w=canvas.width/2,h=canvas.height;
-        const xOf=p=>p.x+.24*p.z;
-        let lo=0,hi=0,top=0;
-        for(const {samples} of paths)for(const {point} of samples){
-          lo=Math.min(lo,xOf(point));hi=Math.max(hi,xOf(point));top=Math.max(top,point.y);
-        }
-        const scale=Math.min((w-24)/(hi-lo),(h-12)/top);
-        ctx.clearRect(0,0,canvas.width,h);ctx.lineWidth=1.8;ctx.lineJoin='round';
-        for(const column of [0,1])for(const path of paths){
-          if(column===0?path.newGrowth===true:path.newGrowth==='past')continue;
-          ctx.strokeStyle=column===0?'#d0d6d3':path.newGrowth?'#ffc273':extra?'#86a4b5':'#9beeff';
-          ctx.lineWidth=column===1&&path.newGrowth?2.6:1.6;
-          ctx.beginPath();path.samples.forEach(({point},i)=>{
-            ctx[i?'lineTo':'moveTo']((column+.5)*w+(xOf(point)-(hi+lo)/2)*scale,h-5-point.y*scale);
-          });ctx.stroke();
-        }
-      },scanned:false,marked:false,age:Infinity,
-      clearReading(){
-        this.age=Infinity;
-        previous(-1,0);current(-1,0);highlight?.(-1,0);
-      },
-      show(dt){
-        this.age+=dt;
-        const t=Number.isFinite(this.age)?this.age:-1;
-        const align=T.MathUtils.smoothstep(t,.85,1.85);
-        previous(t/.85,extra?.73:.88-.58*align,extra?-.024:-.044*(1-align)-.007);
-        if(extra){
-          // First establish the shared outline, then trace only the changed area.
-          const reveal=(t-1.32)/(scanDuration-1.32);
-          const pulse=.82+.18*Math.sin(Math.PI*clamp(reveal,0,1));
-          current((t-.55)/.88,.64-.37*T.MathUtils.smoothstep(t,1.12,1.65),.012);
-          highlight?.(reveal,pulse);
-        }else{
-          // A normal scan registers the whole new outline against the old one.
-          current(t>=.85?1:-1,.94*align,.085*(1-align)+.003);
-        }
-      }};
+      scanned:false,marked:false,age:Infinity};
     pots.push(plant);return plant;
   }
 const bedLights=[];
@@ -312,7 +251,7 @@ const bedLights=[];
       // Keep specimen positions stable so the room scan matches each pot.
       row.forEach((p,i)=>{const [x,z]=seats[side*4+i];p.group.position.set(x,-4.65,z);p.number=i+1;});
     }
-    for(const p of pots){p.scanned=p.marked=false;p.examined=false;p.away=0;p.watch=0;p.hintAge=-1;p.hintPlayed=false;p.age=Infinity;p.show(0);}
+    for(const p of pots){p.scanned=p.marked=false;p.examined=false;p.away=0;p.watch=0;p.hintAge=-1;p.hintPlayed=false;p.age=Infinity;}
   }
   arrange();
   // Vegetation is batched by material. Leave viewing windows around the six interactive plants.
@@ -382,14 +321,99 @@ const bedLights=[];
   }
 
 
+  const orchid=finish(0x7357b5),aqua=finish(0x49bda8),indigo=finish(0x383a77);
+  const blossoms=new Set([orchid,softPink,blossom,lilac,pollen,bell]);
+  const foliage=new Set([fern,midrib,warpedLeaf,warpedRib,leaf,vein,sage,aqua,moss,indigo,cushion]);
+  const stalks=compact?14:24;
+  for(const side of [0,1]){
+    let z=side===0?-27.62:-28.94;
+    for(let i=0;i<stalks&&z>-41;i++){
+      z-=.18+rand()*(i%5===4?1.54:.62);
+      const x=side===0?-1.54-rand()*.27:3.0+rand()*.26;
+      const inward=side===0?1:-1, y=-4.72;
+      const h=i%8===3?1.28+rand()*.40:.19+rand()*.86;
+      const reach=.11+rand()*.27;
+      const tipX=x+inward*reach,tipY=y+h,tipZ=z+.16*(rand()-.4);
+      tube([[x,y,z],[x-inward*.10,y+h*.43,z-.13],[tipX,tipY,tipZ]],.012+rand()*.012,indigo);
+      for(let j=0;j<5+Math.floor(rand()*4);j++){
+        leafBlade(x,y+.05,z,j*2.39+i*.69,.20+rand()*.28,.036+rand()*.048,.09+rand()*.44,j%3===0?aqua:leaf);
+      }
+      if((i+side)%5<2){
+        const width=.22+rand()*.31,turn=rand()*tau,lobes=4+Math.floor(rand()*4);
+        mesh(sheet(10,24,(t,s)=>{
+          const angle=s*tau+turn,r=t*width*(1+.14*Math.cos(angle*lobes));
+          return [tipX+r*Math.cos(angle),tipY+(.22+.10*Math.cos(angle+turn))*t*t,tipZ+r*Math.sin(angle)*.75];
+        }),i%3===0?lilac:orchid);
+        mesh(new T.SphereGeometry(width*.17,10,7).translate(tipX,tipY+.032,tipZ),aqua);
+      }else{
+        const fronds=4+Math.floor(rand()*5);
+        for(let j=0;j<fronds;j++){
+          leafBlade(tipX,tipY-j*.061,tipZ,j*2.39+i,.13+rand()*.28,.028+rand()*.042,.05+rand()*.13,j%2?aqua:sage);
+        }
+      }
+    }
+  }
+
+  // Asymmetric groups leave gaps between hanging crowns and along the aisle.
+  const hangingSites=[
+    [-.83,-29.2,1.04,'bells'],[-1.38,-29.67,.62,'thread'],[-.58,-30.41,.78,'fronds'],
+    [-1.21,-34.38,.86,'thread'],[-.86,-34.86,1.22,'bells'],[-1.43,-37.96,.71,'fronds'],
+    [2.47,-28.17,.74,'fronds'],[2.67,-32.64,.86,'bells'],[2.13,-32.95,1.25,'thread'],
+    [2.84,-33.63,.65,'fronds'],[2.42,-37.42,1.08,'bells'],[2.94,-38.11,.70,'thread'],
+    [2.51,-40.42,.88,'fronds']
+  ];
+  for(const [i,[x,z,length,shape]] of hangingSites.entries()){
+    if(compact&&i%3===2)continue;
+    const crownY=-2.22+rand()*.17,bend=(rand()-.5)*.48,dz=(rand()-.5)*.62;
+    const curve=new T.CatmullRomCurve3([
+      V(x,crownY,z),V(x+bend*.88,crownY-length*.34,z+dz*.42),
+      V(x+bend,crownY-length*.69,z+dz*.8),V(x+bend*.52,crownY-length,z+dz)
+    ]);
+    mesh(new T.TubeGeometry(curve,12,shape==='thread'?.008:.014,6,false),indigo);
+    if(shape==='bells'){
+      const count=2+Math.floor(rand()*4);
+      for(let j=0;j<count;j++){
+        const at=curve.getPoint(.44+.52*j/Math.max(1,count-1)),r=.032+rand()*.047;
+        const angle=rand()*tau,dx=Math.cos(angle)*(.10+rand()*.075),dz=Math.sin(angle)*.15;
+        const end=at.clone().add(V(dx,-.14-r,dz));
+        tube([at.toArray(),[at.x+dx*.6,at.y-.035,at.z+dz*.8],end.toArray()],.007,lilac);
+        mesh(sheet(8,15,(t,s)=>{
+          const a=s*tau,w=r*(.16+.92*Math.sin(t*1.37)+.17*Math.sin(5*a)*t*t);
+          return [end.x+w*Math.cos(a),end.y-r*1.27*t,end.z+w*Math.sin(a)];
+        }),j%2===0?orchid:lilac);
+      }
+    }else if(shape==='thread'){
+      const tip=curve.getPoint(1);
+      for(let j=0;j<3+i%3;j++){
+        const angle=j*2.39+i,l=.13+rand()*.43;
+        const x=tip.x+.13*Math.cos(angle),z=tip.z+.13*Math.sin(angle);
+        tube([tip.toArray(),[x,tip.y-l*.51,z],[x+.07*Math.sin(angle),tip.y-l,z+.04]],.005,aqua);
+        mesh(new T.SphereGeometry(.024+rand()*.018,8,6).scale(.78,1.6,.78).translate(x+.07*Math.sin(angle),tip.y-l,z+.04),orchid);
+      }
+    }else{
+      for(let j=0;j<6+i%3;j++){
+        const at=curve.getPoint(.26+j*.072),angle=j*2.39+i;
+        leafBlade(at.x,at.y,at.z,angle,.19+rand()*.27,.024+rand()*.026,-.10-rand()*.21,j%3?aqua:lilac);
+      }
+      const tip=curve.getPoint(.91);
+      mesh(new T.SphereGeometry(.073,10,7).scale(.79,1.44,.85).translate(tip.x,tip.y-.09,tip.z),orchid);
+    }
+  }
+
   // Pots stay in fixed seats. Share draw calls with the room, while the
   // comparison readings and label anchors remain attached to each specimen.
+  const variants=new Map();
   for(const plant of pots){
     plant.group.updateMatrix();
     for(const part of [...plant.group.children]){
       if(!part.isMesh)continue;
       part.updateMatrix();
       part.geometry.applyMatrix4(part.matrix).applyMatrix4(plant.group.matrix);
+      if(part.userData.changed){
+        const pieces=variants.get(plant)??[];
+        pieces.push({geometry:part.geometry.clone(),band:part.userData.warningBand});
+        variants.set(plant,pieces);
+      }
       mesh(part.geometry,part.material);
       plant.group.remove(part);
     }
@@ -400,12 +424,12 @@ const bedLights=[];
   }
   // Beyond the pressure windows: a blue depth gradient, moving surface underside, lakebed and reeds.
   const sea=new T.Mesh(new T.SphereGeometry(47,28,20),new T.ShaderMaterial({side:T.BackSide,depthWrite:false,
-    uniforms:{t:time},vertexShader:'varying vec3 d;void main(){d=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-    fragmentShader:'varying vec3 d;uniform float t;void main(){float h=normalize(d).y;vec3 c=mix(vec3(.008,.052,.095),vec3(.12,.46,.50),smoothstep(-.35,.9,h)); gl_FragColor=vec4(c,1.);\n#include <colorspace_fragment>\n}'}));
+    uniforms:{t:time,scanBlend},vertexShader:'varying vec3 d;void main(){d=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+    fragmentShader:'varying vec3 d;uniform float t,scanBlend;void main(){vec3 dir=normalize(d);float h=smoothstep(-.35,.9,dir.y);vec3 c=mix(vec3(.008,.052,.095),vec3(.12,.46,.50),h);vec3 night=mix(vec3(.002,.005,.023),vec3(.025,.038,.128),h)+vec3(.018,.024,.10)*pow(max(0.,dot(dir,normalize(vec3(-.25,.32,-1.)))),14.); gl_FragColor=vec4(mix(c,night,scanBlend),1.);\n#include <colorspace_fragment>\n}'}));
   sea.position.set(0,-4,-31);sea.renderOrder=-90;exterior.add(sea);
-  const ceiling=new T.Mesh(new T.PlaneGeometry(60,60,60,60),new T.ShaderMaterial({side:T.DoubleSide,uniforms:{t:time},
+  const ceiling=new T.Mesh(new T.PlaneGeometry(60,60,60,60),new T.ShaderMaterial({side:T.DoubleSide,uniforms:{t:time,scanBlend},
     vertexShader:`uniform float t;varying vec2 p;void main(){p=position.xy;vec3 a=position;a.z=.07*sin(p.x*1.2+t)+.04*sin(p.y*2.-t*.9);gl_Position=projectionMatrix*modelViewMatrix*vec4(a,1.);}`,
-    fragmentShader:'varying vec2 p;uniform float t;'+caustic+'void main(){float k=lattice(p*.7,t);gl_FragColor=vec4(vec3(.08,.39,.45)+k*vec3(.14,.30,.26),1.);\n#include <colorspace_fragment>\n}'}));
+    fragmentShader:'varying vec2 p;uniform float t,scanBlend;'+caustic+'void main(){float k=lattice(p*.7,t);gl_FragColor=vec4(mix(vec3(.08,.39,.45)+k*vec3(.14,.30,.26),vec3(.009,.014,.047),smoothstep(0.,.56,scanBlend)),1.);\n#include <colorspace_fragment>\n}'}));
   ceiling.rotation.x=-Math.PI/2;ceiling.position.set(0,-1.42,-49);exterior.add(ceiling);
   // End the substitute water surface at the dry ramp opening.
   ceiling.material.fragmentShader=ceiling.material.fragmentShader.replace('float k=lattice','float zz=-49.-p.y;float dx=(p.x-.76)/2.62;float fy=-1.27-4.05*smoothstep(17.7,27.,-zz);if(zz< -17.7 && abs(dx)<1. && fy< -1.42 && fy+.16+3.18*sqrt(max(0.,1.-dx*dx))> -1.42)discard;float k=lattice');
@@ -438,52 +462,208 @@ const bedLights=[];
   exterior.add(bubbles);
   room.traverse(o=>o.layers.enable(1));exterior.traverse(o=>o.layers.set(1));
 
-  // Sample actual triangle surfaces: deck, arches, benches, pots and all foliage.
-  const radar=new T.Group();room.add(radar);radar.layers.enable(1);
-  const solids=[],coords=[],colors=[],a=V(),b=V(),c=V(),u=V(),v=V(),normal=V(),sample=V(),tint=new T.Color(),hue=new T.Color(),color=new T.Color();
-  room.updateMatrixWorld(true);
-  room.traverse(obj=>{
-    if(!obj.isMesh||obj===sea||obj.parent===exterior||obj.isInstancedMesh)return;
-    solids.push(obj);
-    const pos=obj.geometry.attributes.position,idx=obj.geometry.index;
-    color.copy(obj.material.color??new T.Color(0x6dbcd0));
-    for(let i=0;i<(idx?.count??pos.count);i+=3){
-      a.fromBufferAttribute(pos,idx?idx.getX(i):i).applyMatrix4(obj.matrixWorld);
-      b.fromBufferAttribute(pos,idx?idx.getX(i+1):i+1).applyMatrix4(obj.matrixWorld);
-      c.fromBufferAttribute(pos,idx?idx.getX(i+2):i+2).applyMatrix4(obj.matrixWorld);
+  // The helmet samples surfaces across the room, including the plants and its glass envelope.
+  const radar=new T.Group();
+  room.add(radar);radar.layers.enable(1);radar.visible=false;
+  const coords=[],colors=[],styles=[];
+  const a=V(),b=V(),c=V(),u=V(),v=V(),normal=V(),sample=V(),white=new T.Color(0xffffff);
+  function sampleSurface(geometry,matrix,density,emit){
+    const pos=geometry.attributes.position,index=geometry.index;
+    for(let i=0;i<(index?.count??pos.count);i+=3){
+      a.fromBufferAttribute(pos,index?index.getX(i):i).applyMatrix4(matrix);
+      b.fromBufferAttribute(pos,index?index.getX(i+1):i+1).applyMatrix4(matrix);
+      c.fromBufferAttribute(pos,index?index.getX(i+2):i+2).applyMatrix4(matrix);
       u.subVectors(b,a);v.subVectors(c,a);
-      const count=Math.floor(normal.crossVectors(u,v).length()*85+rand());
+      const count=Math.floor(normal.crossVectors(u,v).length()*.5*density+rand());
       for(let j=0;j<count;j++){
-        let r=rand(),t=rand();if(r+t>1){r=1-r;t=1-t;}
-        const p=sample.copy(a).addScaledVector(u,r).addScaledVector(v,t);
-        coords.push(p.x,p.y,p.z);
-        tint.copy(color).lerp(hue.setHSL((p.z*.037+p.y*.11+1)%1,.8,.6),.62);
-        colors.push(tint.r,tint.g,tint.b);
+        let r=rand(),t=rand();
+        if(r+t>1){r=1-r;t=1-t;}
+        emit(sample.copy(a).addScaledVector(u,r).addScaledVector(v,t));
       }
     }
+  }
+  const violet=new T.Color(0xb887ff),pink=new T.Color(0xf2a7ff),mint=new T.Color(0x62f8d1),
+    teal=new T.Color(0x52bbff),blue=new T.Color(0x566db0),fogBlue=new T.Color(0x607bca),tint=new T.Color();
+  function addPoint(point,paint,style){
+    coords.push(point.x,point.y,point.z);
+    colors.push(paint.r,paint.g,paint.b);
+    styles.push(style);
+  }
+  const glass=[];
+  room.updateMatrixWorld(true);
+  for(const obj of room.children){
+    if(!obj.isMesh)continue;
+    const mat=obj.material;
+    const growth=foliage.has(mat),flowering=blossoms.has(mat),glassSurface=mat===pane;
+    if(glassSurface)glass.push(obj);
+    const density=glassSurface?24:flowering?680:growth?535:78;
+    sampleSurface(obj.geometry,obj.matrixWorld,density*(compact?.63:1),point=>{
+      const band=.5+.5*Math.sin(point.z*1.13+point.x*1.9+point.y*1.6);
+      if(glassSurface)tint.copy(fogBlue);
+      else if(mat===bell)tint.copy(teal).lerp(white,.66);
+      else if(flowering)tint.copy(violet).lerp(pink,band*.82);
+      else if(growth)tint.copy(teal).lerp(mint,band*.92);
+      else tint.copy(blue).lerp(teal,band*.38);
+      addPoint(point,tint.multiplyScalar(.62+rand()*.53), growth||flowering?1:0);
+    });
+  }
+  for(let i=0;i<(compact?330:690);i++){
+    const side=i%2, height=rand();
+    const point=V((side?2.57:-.89)+(rand()-.5)*1.75,-4.66+height*3.2,-28-rand()*13);
+    addPoint(point,i%4===0?pink:i%3===0?violet:mint,2);
+  }
+  function pointGeometry(positions,inks,tags,delays=new Float32Array(tags.length)){
+    const geometry=new T.BufferGeometry();
+    geometry.setAttribute('position',new T.Float32BufferAttribute(positions,3));
+    geometry.setAttribute('color',new T.Float32BufferAttribute(inks,3));
+    geometry.setAttribute('pointStyle',new T.Float32BufferAttribute(tags,1));
+    geometry.setAttribute('returnDelay',new T.Float32BufferAttribute(delays,1));
+    return geometry;
+  }
+  const warningStrength={value:0},warningStart={value:9},warningPoint={value:V()};
+  const rate={value:sweepSpeed};
+  const radarMaterial=new T.ShaderMaterial({
+    uniforms:{scanBlend,age,origin,time,warningStrength,warningStart,warningPoint,rate},
+    transparent:true,depthWrite:false,vertexColors:true,
+    vertexShader:`
+      uniform float scanBlend, age, time, warningStrength, warningStart, rate;
+      uniform vec3 origin, warningPoint;
+      attribute float pointStyle, returnDelay;
+      varying vec3 ink;
+      varying float opacity;
+      void main(){
+        vec3 p=position;
+        float seed=fract(sin(dot(p,vec3(19.6,73.2,58.8)))*41733.12);
+        float spore=step(1.5,pointStyle)*(1.0-step(2.5,pointStyle));
+        float anomaly=step(2.5,pointStyle);
+        p+=spore*vec3(.22*sin(time*.52+seed*18.),.17*sin(time*.68+seed*14.),.18*cos(time*.43+seed*18.));
+        vec4 mv=modelViewMatrix*vec4(p,1.);
+        float depth=max(.12,-mv.z);
+        float distanceFromScan=distance(p,origin);
+        float edge=(age-.15)*rate-distanceFromScan;
+        float revealed=smoothstep(-.48,.77,edge);
+        float sweep=exp(-edge*edge*2.4);
+        float organic=step(.5,pointStyle)*(1.-anomaly);
+        float size=mix(1.7+3.8*seed,2.45+5.6*seed,organic);
+        size=mix(size,5.5+10.*seed,spore);
+        size=mix(size,3.4+3.4*seed,anomaly);
+        gl_PointSize=clamp(size*4.5/(depth+1.1),.75,spore>.5?11.:8.);
+        float mist=exp(-depth*.047);
+        float twinkle=.84+.16*sin(time*1.7+seed*36.);
+        ink=color*(1.+sweep*.95+spore*.60+anomaly*.25);
+        opacity=scanBlend*revealed*mist*mix(.54,.92,organic)*twinkle;
+        float localAge=age-warningStart-returnDelay;
+        float localReturn=smoothstep(-.045,.27,localAge);
+        float warningHalo=(1.-smoothstep(.14,.43,distance(warningPoint,p)))*warningStrength;
+        opacity*=1.-warningHalo*.49;
+        opacity=mix(opacity,scanBlend*revealed*mist*warningStrength*localReturn,anomaly);
+        mv.z+=mix(.040,.063,anomaly); // Keep returns just in front of the sampled surface.
+        gl_Position=projectionMatrix*mv;
+      }`,
+    fragmentShader:`
+      varying vec3 ink;
+      varying float opacity;
+      void main(){
+        float r=length(gl_PointCoord-.5);
+        if(r>.5 || opacity<.006)discard;
+        float core=1.-smoothstep(.05,.34,r);
+        float halo=(1.-smoothstep(.10,.50,r))*.34;
+        gl_FragColor=vec4(ink*(.62+.38*core),opacity*max(core,halo));
+        #include <colorspace_fragment>
+      }`
   });
-  const radarGeo=new T.BufferGeometry();radarGeo.setAttribute('position',new T.Float32BufferAttribute(coords,3));radarGeo.setAttribute('color',new T.Float32BufferAttribute(colors,3));
-  const radarMat=new T.PointsMaterial({size:.025,vertexColors:true});
-  radarMat.onBeforeCompile=sh=>{
-    sh.uniforms.radarAge=age;sh.uniforms.radarOrigin=origin;
-    sh.vertexShader='uniform vec3 radarOrigin;varying float radarDistance;\n'+sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nradarDistance=distance(position,radarOrigin);');
-    sh.fragmentShader='uniform float radarAge;varying float radarDistance;\n'+sh.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nif(distance(gl_PointCoord,vec2(.5))>.48)discard;float wave=radarAge*12.;diffuseColor.rgb*=radarDistance>wave?.18:1.;diffuseColor.rgb+=vec3(.3,.7,.8)*exp(-8.*abs(radarDistance-wave));');
-  };
-  const cloud=new T.Points(radarGeo,radarMat);cloud.layers.enable(1);radar.add(cloud);radar.visible=false;
-  function scanAt(point){
-    for(const p of pots)p.clearReading();
-    origin.value.copy(point);age.value=0;radar.visible=true;exterior.visible=false;
-    for(const obj of solids)obj.visible=false;
+  const cloud=new T.Points(pointGeometry(coords,colors,styles),radarMaterial);
+  cloud.layers.enable(1);cloud.renderOrder=5;radar.add(cloud);
+  for(const [plant,pieces] of variants){
+    const positions=[],inks=[],tags=[],delays=[],matrix=new T.Matrix4();
+    const base=plant.group.position;
+    const rose=new T.Color(0xd49aa9);
+    for(const {geometry,band} of pieces){
+      sampleSurface(geometry,matrix,compact?850:1350,point=>{
+        positions.push(point.x,point.y,point.z);
+        tint.copy(rose).lerp(white,rand()*.26);
+        inks.push(tint.r,tint.g,tint.b);tags.push(3);
+        const x=point.x-base.x,y=point.y-base.y,z=point.z-base.z;
+        let delay;
+        switch(plant.kind){
+          case '鹿角蕨': delay=Math.hypot(x-.17,y-.42,z)*.90;break;
+          case '羽叶蕨': delay=Math.hypot(x-.31,y-.15,z-.20)*.83;break;
+          case '铃兰': delay=band*.60+Math.abs(x-.185)*.50;break;
+          default: delay=Math.hypot(x-.19,z-.11)*2.9;break;
+        }
+        delays.push(delay);
+      });
+      geometry.dispose();
+    }
+    plant.warningCloud=new T.Points(pointGeometry(positions,inks,tags,delays),radarMaterial);
+    plant.warningCloud.layers.enable(1);plant.warningCloud.renderOrder=6;plant.warningCloud.visible=false;
+    radar.add(plant.warningCloud);
+  }
+  let scannedPlant=null, scanEnd=6, pendingCues=[];
+  function scanStage(){
+    if(!radar.visible)return '';
+    if(age.value<.62)return '头盔启动';
+    if(age.value<1.35)return '正在重建近处花台';
+    if(age.value<2.65)return '正在重建温室深处';
+    if(age.value<scanEnd-1)return '转动视线，观察整个温室';
+    return '正在恢复日常视野';
+  }
+  function scanAt(point,plant=null){
+    restoreView();
+    for(const p of pots)p.age=Infinity;
+    scannedPlant=plant;
+    origin.value.copy(point);age.value=0;radar.visible=true;
+    scanEnd=plant?.demo?7.2:6;
+    pendingCues=[
+      {at:.58,pitch:490,duration:.10,bend:1.16,position:point.clone()},
+      {at:2.42,pitch:265,duration:.28,bend:1.14,position:null}
+    ];
+    if(plant?.warningCloud){
+      warningPoint.value.copy(plant.target).add(plant.group.position);
+      warningStart.value=Math.max(1.15,.15+point.distanceTo(warningPoint.value)/sweepSpeed);
+      for(const [start,span,pitch,duration,bend] of warningCues[plant.kind]){
+        pendingCues.push({at:warningStart.value+start+span*.18,pitch,duration,bend,position:warningPoint.value.clone(),warning:true});
+      }
+      pendingCues.sort((a,b)=>a.at-b.at);
+    }
   }
   function restoreView(){
-    radar.visible=false;exterior.visible=true;
-    for(const obj of solids)obj.visible=true;
+    radar.visible=false;scanBlend.value=0;scannedPlant=null;warningStrength.value=0;
+    pendingCues=[];
+    waterFog.color.copy(dayFog);
+    for(const mesh of glass)mesh.visible=true;
+    ceiling.visible=true;
+    for(const p of pots)if(p.warningCloud)p.warningCloud.visible=false;
   }
-  function tick(dt,now){time.value=now*.001;age.value+=dt;
+  function tick(dt,now,onCue){
+    time.value=now*.001;age.value+=dt;
+    observation.value+=((observing?1:0)-observation.value)*(1-Math.exp(-dt*3.5));
     lamp.color.setRGB(1,.73+.09*Math.sin(now*.003),.34);
-    for(const p of pots)if(Number.isFinite(p.age) && p.age<=scanDuration+5)p.show(dt);
-    if(radar.visible && age.value>4.05)restoreView();
-    if(!exterior.visible)return;
+    for(const p of pots)if(Number.isFinite(p.age))p.age+=dt;
+    if(radar.visible){
+      const t=age.value;
+      while(pendingCues.length && pendingCues[0].at<=t){
+        const cue=pendingCues.shift();
+        onCue?.(cue);
+      }
+      if(t>=scanEnd)restoreView();
+      else{
+        scanBlend.value=T.MathUtils.smoothstep(t,0,.62)*(1-T.MathUtils.smoothstep(t,scanEnd-1,scanEnd));
+        waterFog.color.lerpColors(dayFog,helmetFog,scanBlend.value);
+        ceiling.visible=scanBlend.value<.56;
+        for(const mesh of glass)mesh.visible=scanBlend.value<.49;
+        if(scannedPlant?.warningCloud){
+          const elapsed=t-warningStart.value;
+          scannedPlant.warningCloud.visible=elapsed>=0;
+          let flash=0;
+          for(const [start,duration] of warningCues[scannedPlant.kind]){
+            flash=Math.max(flash,Math.sin(Math.PI*clamp((elapsed-start)/duration,0,1))**2);
+          }
+          warningStrength.value=T.MathUtils.smoothstep(elapsed,0,.38)*(.42+.47*flash);
+        }
+      }
+    }
+    if(scanBlend.value>.78)return;
     for(let i=0;i<air.length;i++){
       const [x,h,z,r]=air[i],f=(h+time.value*.085)%1;
       transform.position.set(x+.12*Math.sin(8*f+i),-6+4.5*f,z);transform.rotation.set(0,0,0);transform.scale.setScalar(r);
@@ -498,12 +678,13 @@ const bedLights=[];
       transform.position.z+=facing*.115*size;transform.scale.set(.055*size,.056*size,.014*size);transform.updateMatrix();tails.setMatrixAt(i,transform.matrix);
     }fish.instanceMatrix.needsUpdate=tails.instanceMatrix.needsUpdate=true;
   }
-  function reset(){room.visible=false;}
-  const waterFog=new T.FogExp2(0x487d89,.063);
+  function reset(){restoreView();observing=false;observation.value=0;room.visible=false;}
+  const dayFog=new T.Color(0x487d89),helmetFog=new T.Color(0x303d70);
+  const waterFog=new T.FogExp2(dayFog,.063);
   const passage=scene.getObjectByName('lake-surface')?.material.uniforms.uPassage;
   function open(){restoreView();room.visible=true;lamp.color.setHex(0xffdc91);if(passage)passage.value=1;}
   function restartSurvey(){
-    for(const p of pots){p.scanned=p.marked=false;p.clearReading();}
+    for(const p of pots){p.scanned=p.marked=false;p.age=Infinity;}
   }
-  reset();return {room,pots,teacher,bedLights,radar,scanAt,arrange,tick,open,restoreView,restartSurvey,waterFog,reset(){reset();if(passage)passage.value=0;}};
+  reset();return {room,pots,teacher,bedLights,radar,scanAt,scanStage,setObservation(value){observing=value;},arrange,tick,open,restoreView,restartSurvey,waterFog,reset(){reset();if(passage)passage.value=0;}};
 }

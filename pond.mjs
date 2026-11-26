@@ -106,6 +106,8 @@ const fragmentShader = String.raw`
   uniform vec3 uColor;
   uniform float uPattern, uReflectionPass, uPaintedLeaf, uWetLeaf, uOutlineInEcho;
   uniform sampler2D uReference;
+  uniform float uDusk, uGlow;
+  uniform vec3 uSun, uPerch;
   varying vec3 vP;
   varying vec3 vNormal;
   varying vec3 vLocal;
@@ -113,14 +115,17 @@ const fragmentShader = String.raw`
   varying vec2 vTexture;
   void main() {
     if (uReflectionPass > 0.5 && vP.y < -1.421) discard;
-    // The two broad dock leaves cross the flight path. Their traced edges
-    // carry the echo while their daytime surfaces recede from the centre.
-    if (uOutlineInEcho > 0.5 && uEcho > 0.15 &&
-        abs(vTexture.y * 2.0 - 1.0) <= smoothstep(0.15, 0.72, uEcho)) discard;
+    // Dither the broad dock leaves before they reach the camera's near plane.
+    if (uOutlineInEcho > 0.5) {
+      float proximity = smoothstep(0.55, 1.65, distance(cameraPosition, vP));
+      float grain = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+      if (proximity <= grain || (uEcho > 0.15 &&
+          abs(vTexture.y * 2.0 - 1.0) <= smoothstep(0.15, 0.72, uEcho))) discard;
+    }
     vec3 n = normalize(gl_FrontFacing ? vNormal : -vNormal);
     
         vec3 view = normalize(cameraPosition - vP);
-    vec3 sun = normalize(vec3(-0.68, 0.68, 0.37));
+    vec3 sun = normalize(mix(vec3(-0.68, 0.68, 0.37), uSun, smoothstep(0.0, 0.45, uDusk)));
     float diffuse = max(0.0, dot(n, sun));
     float rim = pow(1.0 - max(0.0, dot(n, view)), 2.8);
     float glint = pow(max(0.0, dot(n, normalize(sun + view))), 24.0);
@@ -206,6 +211,10 @@ const fragmentShader = String.raw`
     night += vec3(0.23, 0.42, 0.62) * thresholdGlow * uPaintedLeaf * rim;
     float fog = smoothstep(6.0, 40.0, distance(vP, cameraPosition));
     day = mix(day, vec3(0.55, 0.49, 0.75), fog * 0.96);
+    float evening = smoothstep(0.0, 0.56, uDusk);
+    day = mix(day, day * vec3(0.86, 0.57, 0.72) + vec3(0.18, 0.059, 0.017) * (diffuse + rim * 0.55), evening);
+    night += vec3(0.030, 0.049, 0.085) * nearField * leaf * (rim * 0.56 + veins * 0.14);
+    night += vec3(0.19, 0.093, 0.027) * uGlow * (1.0 - smoothstep(0.11, 0.72, distance(vP, uPerch)));
     night = mix(night, vec3(0.0005, 0.0012, 0.0025), fog * 0.86);
     gl_FragColor = vec4(mix(day, night, uEcho), 1.0);
     #include <colorspace_fragment>
@@ -222,12 +231,14 @@ export function makePond({ reflections = true, compact = false } = {}) {
     painted.value = 1;
   }, undefined, () => console.warn('睡莲贴图未加载，继续使用程序生成的叶色。'));
   const uTime = { value: 0 }, uAge = { value: -1 }, uEcho = { value: 0 };
+  const uDusk = { value: 0 }, uGlow = { value: 0 };
+  const uSun = { value: new THREE.Vector3(-0.26, 0.29, -1).normalize() };
   const uOrigin = { value: ORIGIN.clone() };
   const uAim = { value: 2 };
   const uHeading = { value: new THREE.Vector2(0, -1) };
   const uReflectionPass = { value: 0 };
   const uPerch = { value: ORIGIN.clone() }, uLanding = { value: 0 };
-  const shared = { uTime, uAge, uEcho, uOrigin, uAim, uHeading, uReflectionPass, uPerch, uLanding };
+  const shared = { uTime, uAge, uEcho, uOrigin, uAim, uHeading, uReflectionPass, uPerch, uLanding, uDusk, uSun, uGlow };
 
   function material(color, pattern = 0, wind = 0, paintedLeaf = false, wetLeaf = false) {
     return new THREE.ShaderMaterial({
@@ -244,7 +255,7 @@ export function makePond({ reflections = true, compact = false } = {}) {
   const sky = new THREE.Mesh(new THREE.SphereGeometry(82, 40, 24), new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
-    uniforms: { uTime, uEcho },
+    uniforms: { uTime, uEcho, uDusk, uSun },
     vertexShader: String.raw`
       varying vec3 vD;
       void main() {
@@ -253,7 +264,8 @@ export function makePond({ reflections = true, compact = false } = {}) {
       }
     `,
     fragmentShader: String.raw`
-      uniform float uTime, uEcho;
+      uniform float uTime, uEcho, uDusk;
+      uniform vec3 uSun;
       varying vec3 vD;
       float haze(vec3 p) {
         return sin(p.x * 6.5 + p.y * 8.1) * cos(p.z * 7.7 - p.y * 5.4)
@@ -267,8 +279,13 @@ export function makePond({ reflections = true, compact = false } = {}) {
         a.x += uTime * 0.006;
         float cloud = smoothstep(0.38, 1.22, haze(a)) * (1.0 - smoothstep(0.25, 0.67, d.y));
         color = mix(color, vec3(0.84, 0.71, 0.92), cloud * 0.48);
-        float sun = max(0.0, dot(normalize(vec3(-0.50, 0.33, -0.80)), d));
-        color += vec3(0.27, 0.16, 0.16) * pow(sun, 10.0) + vec3(0.53, 0.40, 0.31) * pow(sun, 170.0);
+        float sun = max(0.0, dot(uSun, d));
+        float evening = smoothstep(0.04, 0.58, uDusk);
+        vec3 sunset = mix(vec3(0.95, 0.32, 0.16), vec3(0.24, 0.20, 0.48), height);
+        color = mix(color, sunset + vec3(0.30, 0.16, 0.09) * cloud * (1.0 - height), evening);
+        float disk = smoothstep(0.99930, 0.99958, sun) * smoothstep(-0.070, -0.040, d.y);
+        color += vec3(0.50, 0.18, 0.07) * pow(sun, 28.0)
+          + vec3(1.0, 0.74, 0.34) * disk * (1.0 - smoothstep(0.66, 0.80, uDusk));
         vec3 night = mix(vec3(0.0017, 0.0034, 0.0070), vec3(0.0007, 0.0011, 0.0026), height);
         gl_FragColor = vec4(mix(color, night, uEcho), 1.0);
         #include <colorspace_fragment>
@@ -300,7 +317,8 @@ export function makePond({ reflections = true, compact = false } = {}) {
     fragmentShader: String.raw`
       ${wave}
       uniform float uTime;
-      uniform float uPassage;
+      uniform float uPassage, uDusk, uGlow;
+      uniform vec3 uSun, uPerch;
       uniform float uReflect;
       uniform sampler2D uReflectedScene;
       uniform mat4 uReflectionProjection;
@@ -331,6 +349,12 @@ export function makePond({ reflections = true, compact = false } = {}) {
           vec3 reflected = texture2D(uReflectedScene, clamp(sampleSpot, 0.0, 1.0)).rgb;
           day = mix(day, reflected * vec3(0.77, 0.79, 0.94), bounds * (0.20 + fresnel * 0.34));
         }
+        float sunLane = max(0.0, dot(normalize(vec3(-view.x, view.y, -view.z)), uSun));
+        float evening = smoothstep(0.03, 0.49, uDusk);
+        day = mix(day, day * vec3(0.73, 0.52, 0.72), evening * 0.68);
+        day += vec3(0.84, 0.32, 0.074) * pow(sunLane, 56.0) * (0.38 + 0.38 * r1 * r1)
+          * evening * (1.0 - smoothstep(0.62, 0.85, uDusk));
+        night += vec3(0.084, 0.042, 0.015) * uGlow * (1.0 - smoothstep(0.02, 0.58, distance(p, uPerch.xz)));
         float nearWave = crest(vP, 0.0);
         float breaks = 0.38 + 0.62 * smoothstep(-0.15, 0.6, sin(p.x * 3.7 + p.y * 1.82) * cos(p.x * 2.3 - p.y * 0.6));
         float shore = smoothstep(1.9, 4.5, abs(p.x - 0.52));
@@ -438,7 +462,8 @@ export function makePond({ reflections = true, compact = false } = {}) {
         void main() {
           float response = reveal(vP);
           float front = crest(vP, 0.0);
-          float fog = 1.0 - smoothstep(10.0, 36.0, distance(vP, cameraPosition));
+          float distanceToView = distance(vP, cameraPosition);
+          float fog = smoothstep(0.55, 1.65, distanceToView) * (1.0 - smoothstep(10.0, 36.0, distanceToView));
           vec3 ink = mix(vec3(0.37, 0.61, 0.89), vec3(0.88, 0.95, 1.0), clamp(front * 0.62 + vColor.r * 0.27, 0.0, 1.0));
           gl_FragColor = vec4(ink, uEcho * fog * min(0.97, response * 0.90 + front * 0.58));
           #include <colorspace_fragment>
@@ -977,7 +1002,7 @@ export function makePond({ reflections = true, compact = false } = {}) {
       delay: travelTime(target.point, origin) + 0.24 };
   }
 
-  function update(seconds, amount, age, insect, visible, pulse, camera, landingAge, guidePhase, phaseAge, wingExposed) {
+  function update(seconds, amount, age, insect, visible, pulse, camera, landingAge, guidePhase, phaseAge, wingExposed, dusk = 0) {
     if(guidePhase==='flight'){
       if(seconds-lastTrail>.1 || seconds<lastTrail){
         for(let i=trail.length-1;i>0;i--){trail[i].position.copy(trail[i-1].position);trail[i].visible=trail[i-1].visible;}
@@ -988,6 +1013,8 @@ export function makePond({ reflections = true, compact = false } = {}) {
     uLanding.value = landingAge >= 0 && landingAge < 1 ? 3 * Math.sin(landingAge * 21) * Math.exp(-landingAge * 4) : 0;
     uTime.value = seconds;
     uEcho.value = amount;
+    uDusk.value = dusk;
+    uSun.value.set(-0.26, THREE.MathUtils.lerp(0.29, -0.144, THREE.MathUtils.smoothstep(dusk, 0, 0.86)), -1).normalize();
     const pulsing = age >= 0 && age <= ECHO_DURATION;
     uAge.value = pulsing ? age : -1;
     uAim.value = pulse?.aim ?? 2;
@@ -1007,16 +1034,18 @@ export function makePond({ reflections = true, compact = false } = {}) {
     const departure = guidePhase === 'flight' ? Math.max(0, 1 - phaseAge / 1.25) : 0;
     const response = guidePhase === 'end' ? amount : guidePhase === 'found' ? 1 : guidePhase === 'flight'
       ? Math.max(departure, pulse?.kind === 'passage' ? afterglow : 0) : afterglow * (wingExposed ? 1 : 0.48);
-    const daylight = (guidePhase==='daylight' || guidePhase==='end' || guidePhase==='idle' ? visible : 0) * (1 - amount);
-    const searching = ['hunt','found','flight','nightfall'].includes(guidePhase);
+    const beacon = guidePhase==='end' ? visible * .62 : 0;
+    const searching = ['hunt','found','flight','discovery'].includes(guidePhase);
     const returnVisible = searching || (confirmed && response > 0);
     const perched=guidePhase==='hunt'&&phaseAge>=.9;
-    let intensity=daylight;
+    let intensity=beacon;
     if(guidePhase==='hunt')intensity=perched?.93+.07*Math.sin(seconds*3):.48+.15*Math.cos(seconds*7);
-    if(guidePhase==='nightfall')intensity=.42-.30*THREE.MathUtils.smoothstep(amount,.48,1);
+    if(guidePhase==='discovery')intensity=(.77+.15*Math.sin(seconds*5))*THREE.MathUtils.smoothstep(phaseAge,0,.72);
+    if(guidePhase==='found')intensity=.24;
     if(guidePhase==='flight')intensity=.44+.14*Math.sin(seconds*7)+.20*THREE.MathUtils.smoothstep(phaseAge,3.3,4.4);
     if(guidePhase==='descent')intensity=.70+.08*Math.sin(seconds*5);
     if(guidePhase==='observe')intensity=.48*(1-THREE.MathUtils.smoothstep(phaseAge,0,2.4));
+    uGlow.value = searching ? intensity : 0;
     bug.visible = intensity > 0.014;
     returnAccent.visible = searching && guidePhase!=='found' && firstReturn>.05;
     if (bug.visible) {
