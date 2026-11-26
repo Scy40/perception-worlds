@@ -71,7 +71,7 @@ let menu=false, focusPlant=null, viewed=null, dwell=0, actionKey='';
 const checkpoints=['backDoor','fromBay','fromHouse','resumeRun'];
 function resetFocus(){focusPlant=viewed=null;dwell=0;ready=false;detector.reset();screen=null;}
 function openMenu(open){
-  menu=open;ready=false;
+  menu=open;ready=false;pinch.reset();
   if(anomalyArrow)anomalyArrow.hidden=true;
   $('scanRecord').hidden=true;
   $('menuTitle').textContent=phase==='complete'?'温室 · 自由探索':'选择体验起点';
@@ -120,6 +120,7 @@ const stationSigns = [
   {name:'水培台', point:new THREE.Vector3(2.22,-3.98,-32.3), station:1}
 ];
 let station=-1, chosenSign=null, scanning=null, focusAge=0;
+let nextHouseFocus=null, nextHouseFocusAge=0;
 const crossSign={name:'',point:new THREE.Vector3(),station:0};
 let anomalyArrow;
 const returnSign={name:'回到过道',point:new THREE.Vector3(),station:-1};
@@ -234,7 +235,7 @@ function progressHouse(dt){
 }
 function observeBeds(dt){
   let candidate=null, best=Infinity;
-  const sight=palm;
+  const gaze=eyes.point;
   const old=focusPlant||chosenSign;
   const items=[...house.pots,...stationSigns,crossSign,returnSign];
   for(const item of items){
@@ -254,21 +255,31 @@ function observeBeds(dt){
     if(item.tag.textContent!==caption)item.tag.textContent=caption;
   }
   // Position every label first, then read hit boxes in one layout pass.
-  if(sight && !scanning)for(const item of items){
-    if(item.tag.hidden)continue;
-    const bounds=item.tag.getBoundingClientRect();
-    const px=sight.x*innerWidth,py=sight.y*innerHeight;
-    const d=Math.hypot(Math.max(bounds.left-px,0,px-bounds.right),Math.max(bounds.top-py,0,py-bounds.bottom));
-    const plant=!!item.group;
-    const reach=plant?clamp(innerHeight*.035,22,34):18;
-    const keep=old===item;
-    const centerGap=Math.hypot(px-(bounds.left+bounds.right)/2,py-(bounds.top+bounds.bottom)/2);
-    const score=d+centerGap*.02-(keep?8:0);
-    if(score<best && d<reach+(keep?(pinch.target===item?48:14):0)){
-      candidate=item;best=score;
-    }
-  }
   if(scanning)candidate=scanning;
+  else if(old && pinch.target===old)candidate=old;
+  else{
+    const visible=items.filter(item=>!item.tag.hidden).map(item=>[item,item.tag.getBoundingClientRect()]);
+    for(const sight of [gaze,palm]){
+      if(!sight)continue;
+      const reach=sight===gaze?clamp(innerHeight*.10,44,84):clamp(innerHeight*.042,24,42);
+      const px=sight.x*innerWidth,py=sight.y*innerHeight;
+      for(const [item,bounds] of visible){
+        const gap=Math.hypot(Math.max(bounds.left-px,0,px-bounds.right),Math.max(bounds.top-py,0,py-bounds.bottom));
+        const center=Math.hypot(px-(bounds.left+bounds.right)/2,py-(bounds.top+bounds.bottom)/2);
+        const score=gap+center*.22;
+        if(gap<reach && score<best){candidate=item;best=score;}
+      }
+      if(candidate)break;
+    }
+    if(candidate!==nextHouseFocus){
+      nextHouseFocus=candidate;
+      nextHouseFocusAge=0;
+    }
+    nextHouseFocusAge+=dt;
+    if(candidate!==old && old && !old.tag.hidden && nextHouseFocusAge<(candidate?.point ? .16 : candidate ? .18 : .28)){
+      candidate=old;
+    }else if(!old && nextHouseFocusAge<.16)candidate=null;
+  }
   focusAge=old===candidate?focusAge+dt:0;
   focusPlant=candidate?.group?candidate:null;
   chosenSign=candidate?.point?candidate:null;
@@ -566,6 +577,7 @@ window.addEventListener('resize',resize);
 function signalText(text) { feedback=text; noteUntil=gameTime+1800; }
 function changePhase(next,now=gameTime) {
   phase=next; phaseTime=0; phaseAt=now;
+  nextHouseFocus=null;nextHouseFocusAge=0;
   lockUntil=missUntil=0; ready=false;
   if(next!=='found')detector.reset();
   feedback=''; noteUntil=0;
@@ -710,12 +722,13 @@ function applyTracking(kind,points,now){
     }else palm=nextPalm;
     lastHandAt=now;
     const indoors=greenhousePhase();
-    const control=controlAt(palm);
+    const heldTarget=!menu && indoors && pinch.target===houseTarget() ? pinch.target : null;
+    const control=heldTarget?'':controlAt(palm);
     if(indoors && !menu && !control && facePresent(now))observeBeds(0);
-    const target=control || (!menu && indoors?houseTarget():null);
+    const target=heldTarget || control || (!menu && indoors?houseTarget():null);
     const pressed=pinch.update(handPoints,aspect,now,facePresent(now)?target:null,indoors?320:55,handHold);
     if(pressed && indoors)ringFlashUntil=performance.now()+240;
-    if(menuHand(now,pressed)){drawPreview();return;}
+    if(!heldTarget&&menuHand(now,pressed)){drawPreview();return;}
     if(!facePresent(now)){ready=false;return;}
     if(greenhousePhase()){if(pressed)confirmHouse();drawPreview();return;}
     const radius=clamp(innerHeight*(ready?.21:.17),60,185);
@@ -899,7 +912,7 @@ function drawUI(now,dt,present){
   $('aimDot').hidden=true;
   if(!present){
     if(anomalyArrow)anomalyArrow.hidden=true;
-    focusPlant=chosenSign=null;focusAge=0;return;
+    focusPlant=chosenSign=nextHouseFocus=null;focusAge=nextHouseFocusAge=0;return;
   }
   if(greenhousePhase()){
     $('mode').textContent=house.radar.visible?'激光雷达 · 点云视野':'温室 · 日常视野';
@@ -919,14 +932,14 @@ function drawUI(now,dt,present){
   if(phase==='flight')hint=routeStop===1&&phaseTime<2500?'蝙蝠用回声辨认水岸 · 跟着回声与光迹走':'跟着光迹，听回声掠过湖面';
   if(phase==='end'||phase==='descent')hint='沿着萤光，跟随步道下潜';
   if(phase==='observe')hint=phaseTime<1600?'先看铃兰的枝头':'水纹掠过花瓣 · 确认它和上次记录是否一样';
-  if(phase==='teach')hint=house.teacher.scanned?'铃兰与上次记录相符':scanning?house.scanStage():focusPlant===house.teacher?'拇指和食指轻捏，启动激光雷达头盔':'手放低一些 · 把掌心光标移近「铃兰」';
+  if(phase==='teach')hint=house.teacher.scanned?'铃兰与上次记录相符':scanning?house.scanStage():focusPlant===house.teacher?'拇指和食指轻捏，启动激光雷达头盔':'看向「铃兰」，手放在胸前';
   if(phase==='choose')hint=chosenSign?'轻捏前往'+chosenSign.name:'选择花台';
   if(phase==='walk')hint=station<0?'返回过道':'前往'+stationNames[station];
   if(['inspect','complete'].includes(phase)){
     if(scanning)hint=house.scanStage();
     else if(chosenSign)hint='轻捏'+chosenSign.name;
     else if(focusPlant)hint=focusPlant.scanned && focusPlant.extra && !focusPlant.marked?'再捏归档':'轻捏'+(focusPlant.scanned?'重看':'扫描')+focusPlant.kind;
-    else hint=phase==='complete'?'自由探索 · 轻捏植物扫描':'先看植物外形，再轻捏扫描确认变化';
+    else hint=phase==='complete'?'自由探索 · 轻捏植物扫描':'看向植物卡片，再在胸前轻捏';
   }
   if(house?.radar.visible&&greenhousePhase()&&!scanning)hint=house.scanStage();
   if(gameTime<noteUntil)hint=feedback;
@@ -985,21 +998,20 @@ function frame(now){
   const indoors=greenhousePhase();
   const gaze=eyes.point;
   const touring=phase==='daylight'||phase==='firstEcho';
-  const eyeWeight=indoors?1:touring?1.05:(ready||phase==='found'?.15:.42);
+  const eyeWeight=indoors?.65:touring?1.05:(ready||phase==='found'?.15:.42);
   const gazeRange=phase==='firstEcho'?.53:touring?1-0.47*THREE.MathUtils.smoothstep(phaseTime,7600,10500):1;
-  const headWeight=touring?.09:1;
-  const lookYaw=headWeight*quietLook(headYaw,.10,1.45)+gazeRange*quietLook(.5-(gaze?.x??.5),.09,.46)*1.55*eyeWeight;
-  const lookPitch=headWeight*quietLook(headTilt,.055,.48)+gazeRange*quietLook(.5-(gaze?.y??.5),.07,.45)*.95*eyeWeight;
-  const aiming=indoors && focusPlant && !scanning && ['teach','inspect','complete'].includes(phase) &&
-    palm && now-lastHandAt<handHold;
-  // Give a newly highlighted name a still moment for the pinch. Deliberate
-  // looking resumes gradually even if the hand stays over the same label.
-  const settle=aiming && (focusAge<.65 || pinch.target===focusPlant);
+  const headWeight=indoors?.20:touring?.09:1;
+  const lookYaw=headWeight*quietLook(headYaw,.10,1.45)+gazeRange*quietLook(.5-(gaze?.x??.5),indoors?.14:.09,.46)*1.55*eyeWeight;
+  const lookPitch=headWeight*quietLook(headTilt,.055,.48)+gazeRange*quietLook(.5-(gaze?.y??.5),indoors?.12:.07,.45)*.95*eyeWeight;
+  const selected=focusPlant||chosenSign;
+  const aiming=indoors && selected && !scanning;
+  // Keep the camera stable while the hand confirms the selected card.
+  const settle=aiming && (focusAge<.45 || pinch.target===selected);
   if(!settle){
-    yaw=followAngle(yaw,turnTo+lookYaw,dt,aiming?.45:1.25);
-    pitch=followAngle(pitch,tiltTo+lookPitch,dt,aiming?.32:.85);
+    yaw=followAngle(yaw,turnTo+lookYaw,dt,indoors?(aiming?.33:.65):1.25);
+    pitch=followAngle(pitch,tiltTo+lookPitch,dt,indoors?(aiming?.22:.42):.85);
     const weight=1-Math.exp(-dt*(aiming?2.2:5));
-    viewShift.lerp(desiredShift.copy(pos).multiplyScalar(indoors?.48:.75),weight);
+    viewShift.lerp(desiredShift.copy(pos).multiplyScalar(indoors?.19:.75),weight);
   }
   windowView.viewFrom(viewShift,yaw,pitch,explorer);camera.updateMatrixWorld();
 
