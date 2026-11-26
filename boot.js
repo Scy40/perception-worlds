@@ -34,7 +34,7 @@ if (location.protocol === 'file:') {
     if (!lotusStartup.failed && statusLine.dataset.modules !== 'ready')
       lotusStartup.problem('场景组件加载超时，请检查网络后重试。');
   }, 90000);
-  import('./app.js?survey=6').catch(error => {
+  import('./app.js?survey=7').catch(error => {
     console.error(error);
     if (!lotusStartup.failed)
       lotusStartup.problem('三维场景文件加载失败，请检查网络后重试。');

@@ -127,7 +127,7 @@ let cabinLoad, cabinAttempts=0, enteringHouse=false;
 function loadCabin(){
   if(!cabinLoad){
     const attempt=cabinAttempts++;
-    cabinLoad=withTimeout(import('./cabin.mjs?survey=6&attempt='+attempt),30000)
+    cabinLoad=withTimeout(import('./cabin.mjs?survey=7&attempt='+attempt),30000)
       .catch(error=>{cabinLoad=null;throw error;});
   }
   return cabinLoad;

@@ -23,6 +23,7 @@ export function makeCabin(scene,{compact=false}={}){
   const time={value:0},age={value:9},origin={value:flower.clone()},scanBlend={value:0};
   const observation={value:0},observationTarget={value:V(-.69,-4.05,-29.15)};
   let observing=false;
+  const rate={value:8.6};
   let seed=4287;
   const rand=()=>((seed=(Math.imul(seed,1664525)+1013904223)>>>0)/4294967296);
   const caustic=`
@@ -36,19 +37,24 @@ export function makeCabin(scene,{compact=false}={}){
     mat.onBeforeCompile=sh=>{
       sh.uniforms.waterTime=time;
       sh.uniforms.scanBlend=scanBlend;
+      sh.uniforms.sweepAge=age;
+      sh.uniforms.sweepOrigin=origin;
+      sh.uniforms.sweepRate=rate;
       sh.uniforms.observation=observation;
       sh.uniforms.observationTarget=observationTarget;
       sh.vertexShader='varying vec3 waterPos;\n'+sh.vertexShader.replace('#include <worldpos_vertex>',
         '#include <worldpos_vertex>\nvec4 waterVertex=vec4(transformed,1.);\n#ifdef USE_INSTANCING\nwaterVertex=instanceMatrix*waterVertex;\n#endif\nwaterPos=(modelMatrix*waterVertex).xyz;');
-      sh.fragmentShader='varying vec3 waterPos; uniform float waterTime, scanBlend, observation; uniform vec3 observationTarget;\n'+caustic+'\n'+sh.fragmentShader.replace('#include <opaque_fragment>',
+      sh.fragmentShader='varying vec3 waterPos; uniform float waterTime, scanBlend, observation, sweepAge, sweepRate; uniform vec3 observationTarget, sweepOrigin;\n'+caustic+'\n'+sh.fragmentShader.replace('#include <opaque_fragment>',
         `outgoingLight+=vec3(.13,.31,.28)*lattice(waterPos.xz+waterPos.y*vec2(.43,.35),waterTime)*smoothstep(1.,5.,-waterPos.y);
         vec3 fromPlant=waterPos-observationTarget;
         float onFlower=1.-smoothstep(.25,.91,length(fromPlant*vec3(1.,.81,1.)));
         float ripple=pow(.5+.5*sin(waterPos.y*18.+waterPos.x*7.+waterTime*2.2),5.);
         float glare=onFlower*ripple*observation*(1.-scanBlend);
         outgoingLight=mix(outgoingLight,vec3(.48,.73,.68),glare*.53);
-        vec3 shadow=vec3(.003,.008,.027)+outgoingLight*vec3(.065,.10,.23);
-        outgoingLight=mix(outgoingLight,shadow,scanBlend);
+        float read=smoothstep(-.4,.9,(sweepAge-.15)*sweepRate-distance(waterPos,sweepOrigin));
+        float fade=scanBlend*max(read,smoothstep(2.35,2.9,sweepAge));
+        vec3 shadow=vec3(.004,.011,.019)+outgoingLight*vec3(.022,.036,.061);
+        outgoingLight=mix(outgoingLight,shadow,fade);
         #include <opaque_fragment>`);
     };return mat;
   }
@@ -113,7 +119,7 @@ export function makeCabin(scene,{compact=false}={}){
   };
   const soil=finish(0x344e48), fern=finish(0x65af85), midrib=finish(0xb5cc89), bell=finish(0xf3ded5);
   const warpedLeaf=finish(0x678580), warpedRib=finish(0x867c8e);
-  const sweepSpeed=8.6;
+
   const warningCues={
     '鹿角蕨':[[.27,.73,425,.32,1.53]],
     '羽叶蕨':[[.19,.49,680,.16,.89],[.76,.52,475,.22,.78]],
@@ -425,7 +431,7 @@ const bedLights=[];
   // Beyond the pressure windows: a blue depth gradient, moving surface underside, lakebed and reeds.
   const sea=new T.Mesh(new T.SphereGeometry(47,28,20),new T.ShaderMaterial({side:T.BackSide,depthWrite:false,
     uniforms:{t:time,scanBlend},vertexShader:'varying vec3 d;void main(){d=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-    fragmentShader:'varying vec3 d;uniform float t,scanBlend;void main(){vec3 dir=normalize(d);float h=smoothstep(-.35,.9,dir.y);vec3 c=mix(vec3(.008,.052,.095),vec3(.12,.46,.50),h);vec3 night=mix(vec3(.002,.005,.023),vec3(.025,.038,.128),h)+vec3(.018,.024,.10)*pow(max(0.,dot(dir,normalize(vec3(-.25,.32,-1.)))),14.); gl_FragColor=vec4(mix(c,night,scanBlend),1.);\n#include <colorspace_fragment>\n}'}));
+    fragmentShader:'varying vec3 d;uniform float t,scanBlend;void main(){vec3 dir=normalize(d);float h=smoothstep(-.35,.9,dir.y);vec3 c=mix(vec3(.008,.052,.095),vec3(.12,.46,.50),h);vec3 night=mix(vec3(.0015,.004,.008),vec3(.009,.019,.031),h)+vec3(.012,.021,.029)*pow(max(0.,dot(dir,normalize(vec3(-.25,.32,-1.)))),14.); gl_FragColor=vec4(mix(c,night,scanBlend),1.);\n#include <colorspace_fragment>\n}'}));
   sea.position.set(0,-4,-31);sea.renderOrder=-90;exterior.add(sea);
   const ceiling=new T.Mesh(new T.PlaneGeometry(60,60,60,60),new T.ShaderMaterial({side:T.DoubleSide,uniforms:{t:time,scanBlend},
     vertexShader:`uniform float t;varying vec2 p;void main(){p=position.xy;vec3 a=position;a.z=.07*sin(p.x*1.2+t)+.04*sin(p.y*2.-t*.9);gl_Position=projectionMatrix*modelViewMatrix*vec4(a,1.);}`,
@@ -482,32 +488,37 @@ const bedLights=[];
       }
     }
   }
-  const violet=new T.Color(0xb887ff),pink=new T.Color(0xf2a7ff),mint=new T.Color(0x62f8d1),
-    teal=new T.Color(0x52bbff),blue=new T.Color(0x566db0),fogBlue=new T.Color(0x607bca),tint=new T.Color();
+  const violet=new T.Color(0x9c9ebc),pink=new T.Color(0xc4bbcf),mint=new T.Color(0xa8c7bc),
+    teal=new T.Color(0x6ca8ad),blue=new T.Color(0x73849c),fogBlue=new T.Color(0x828ba7),tint=new T.Color();
   function addPoint(point,paint,style){
     coords.push(point.x,point.y,point.z);
     colors.push(paint.r,paint.g,paint.b);
     styles.push(style);
   }
-  const glass=[];
+  const glass=[],opaqueMaterials=new Set();
   room.updateMatrixWorld(true);
   for(const obj of room.children){
     if(!obj.isMesh)continue;
     const mat=obj.material;
     const growth=foliage.has(mat),flowering=blossoms.has(mat),glassSurface=mat===pane;
     if(glassSurface)glass.push(obj);
-    const density=glassSurface?24:flowering?680:growth?535:78;
-    sampleSurface(obj.geometry,obj.matrixWorld,density*(compact?.63:1),point=>{
+    if(!mat.transparent)opaqueMaterials.add(mat);
+    const structure=mat===enamel||mat===alloy;
+    const density=glassSurface?24:flowering?1240:growth?1040:structure?485:184;
+    sampleSurface(obj.geometry,obj.matrixWorld,density*(compact?.48:1),point=>{
       const band=.5+.5*Math.sin(point.z*1.13+point.x*1.9+point.y*1.6);
       if(glassSurface)tint.copy(fogBlue);
       else if(mat===bell)tint.copy(teal).lerp(white,.66);
       else if(flowering)tint.copy(violet).lerp(pink,band*.82);
       else if(growth)tint.copy(teal).lerp(mint,band*.92);
-      else tint.copy(blue).lerp(teal,band*.38);
-      addPoint(point,tint.multiplyScalar(.62+rand()*.53), growth||flowering?1:0);
+      else tint.copy(blue).lerp(structure?fogBlue:teal,band*.54);
+      addPoint(point,tint.multiplyScalar(.62+rand()*.53), growth||flowering?1:structure?.32:0);
     });
   }
-  for(let i=0;i<(compact?330:690);i++){
+  for(const obj of exterior.children){
+    if(obj!==sea && obj!==ceiling && obj.isMesh && !obj.material.transparent)opaqueMaterials.add(obj.material);
+  }
+  for(let i=0;i<(compact?18:52);i++){
     const side=i%2, height=rand();
     const point=V((side?2.57:-.89)+(rand()-.5)*1.75,-4.66+height*3.2,-28-rand()*13);
     addPoint(point,i%4===0?pink:i%3===0?violet:mint,2);
@@ -521,7 +532,6 @@ const bedLights=[];
     return geometry;
   }
   const warningStrength={value:0},warningStart={value:9},warningPoint={value:V()};
-  const rate={value:sweepSpeed};
   const radarMaterial=new T.ShaderMaterial({
     uniforms:{scanBlend,age,origin,time,warningStrength,warningStart,warningPoint,rate},
     transparent:true,depthWrite:false,vertexColors:true,
@@ -544,14 +554,15 @@ const bedLights=[];
         float revealed=smoothstep(-.48,.77,edge);
         float sweep=exp(-edge*edge*2.4);
         float organic=step(.5,pointStyle)*(1.-anomaly);
-        float size=mix(1.7+3.8*seed,2.45+5.6*seed,organic);
-        size=mix(size,5.5+10.*seed,spore);
+        float structure=step(.2,pointStyle)*(1.-step(.5,pointStyle));
+        float size=mix(2.1+2.4*seed,2.65+3.5*seed,organic);
+        size=mix(size,3.+4.*seed,spore);
         size=mix(size,3.4+3.4*seed,anomaly);
-        gl_PointSize=clamp(size*4.5/(depth+1.1),.75,spore>.5?11.:8.);
+        gl_PointSize=clamp(size*5.3/(depth+1.1),1.10+structure*.42,spore>.5?10.:7.5);
         float mist=exp(-depth*.047);
-        float twinkle=.84+.16*sin(time*1.7+seed*36.);
-        ink=color*(1.+sweep*.95+spore*.60+anomaly*.25);
-        opacity=scanBlend*revealed*mist*mix(.54,.92,organic)*twinkle;
+        float twinkle=mix(1.,.84+.16*sin(time*1.7+seed*36.),spore);
+        ink=color*(1.+sweep*.95+spore*.60+anomaly*.30+structure*.31);
+        opacity=scanBlend*revealed*mist*mix(.82,1.,max(organic,structure))*twinkle;
         float localAge=age-warningStart-returnDelay;
         float localReturn=smoothstep(-.045,.27,localAge);
         float warningHalo=(1.-smoothstep(.14,.43,distance(warningPoint,p)))*warningStrength;
@@ -577,7 +588,7 @@ const bedLights=[];
   for(const [plant,pieces] of variants){
     const positions=[],inks=[],tags=[],delays=[],matrix=new T.Matrix4();
     const base=plant.group.position;
-    const rose=new T.Color(0xd49aa9);
+    const rose=new T.Color(0xd1a4ad);
     for(const {geometry,band} of pieces){
       sampleSurface(geometry,matrix,compact?850:1350,point=>{
         positions.push(point.x,point.y,point.z);
@@ -620,7 +631,7 @@ const bedLights=[];
     ];
     if(plant?.warningCloud){
       warningPoint.value.copy(plant.target).add(plant.group.position);
-      warningStart.value=Math.max(1.15,.15+point.distanceTo(warningPoint.value)/sweepSpeed);
+      warningStart.value=Math.max(1.15,.15+point.distanceTo(warningPoint.value)/rate.value);
       for(const [start,span,pitch,duration,bend] of warningCues[plant.kind]){
         pendingCues.push({at:warningStart.value+start+span*.18,pitch,duration,bend,position:warningPoint.value.clone(),warning:true});
       }
@@ -631,8 +642,10 @@ const bedLights=[];
     radar.visible=false;scanBlend.value=0;scannedPlant=null;warningStrength.value=0;
     pendingCues=[];
     waterFog.color.copy(dayFog);
+    for(const mat of opaqueMaterials)mat.colorWrite=true;
     for(const mesh of glass)mesh.visible=true;
     ceiling.visible=true;
+    for(const light of bedLights)light.visible=true;
     for(const p of pots)if(p.warningCloud)p.warningCloud.visible=false;
   }
   function tick(dt,now,onCue){
@@ -650,6 +663,10 @@ const bedLights=[];
       else{
         scanBlend.value=T.MathUtils.smoothstep(t,0,.62)*(1-T.MathUtils.smoothstep(t,scanEnd-1,scanEnd));
         waterFog.color.lerpColors(dayFog,helmetFog,scanBlend.value);
+        // At full scan the geometry supplies depth, while only point returns supply color.
+        const fullyScanned=t>=2.9 && scanBlend.value>.98;
+        for(const mat of opaqueMaterials)mat.colorWrite=!fullyScanned;
+        for(const light of bedLights)light.visible=!fullyScanned;
         ceiling.visible=scanBlend.value<.56;
         for(const mesh of glass)mesh.visible=scanBlend.value<.49;
         if(scannedPlant?.warningCloud){
@@ -679,7 +696,7 @@ const bedLights=[];
     }fish.instanceMatrix.needsUpdate=tails.instanceMatrix.needsUpdate=true;
   }
   function reset(){restoreView();observing=false;observation.value=0;room.visible=false;}
-  const dayFog=new T.Color(0x487d89),helmetFog=new T.Color(0x303d70);
+  const dayFog=new T.Color(0x487d89),helmetFog=new T.Color(0x17262f);
   const waterFog=new T.FogExp2(dayFog,.063);
   const passage=scene.getObjectByName('lake-surface')?.material.uniforms.uPassage;
   function open(){restoreView();room.visible=true;lamp.color.setHex(0xffdc91);if(passage)passage.value=1;}
