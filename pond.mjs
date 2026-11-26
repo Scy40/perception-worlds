@@ -10,6 +10,13 @@ const TARGETS = [
   { point: new THREE.Vector3(2.08, -0.48, -12.25), name: '白石后的水岸' },
 ];
 
+export function keepDockClear(position) {
+  // Let the leaf pass on the left during both the opening and the first flight.
+  const across = THREE.MathUtils.smoothstep(-position.z, 0.85, 2.05)
+    * (1 - THREE.MathUtils.smoothstep(-position.z, 4.35, 5.55));
+  if (across > 0) position.x = Math.max(position.x, THREE.MathUtils.lerp(-0.8, 1.24, across));
+}
+
 function travelTime(p, origin) {
   return Math.hypot(p.x - origin.x, (p.y - origin.y) * 0.52, p.z - origin.z) / SPEED;
 }
@@ -117,7 +124,7 @@ const fragmentShader = String.raw`
     if (uReflectionPass > 0.5 && vP.y < -1.421) discard;
     // Dither the broad dock leaves before they reach the camera's near plane.
     if (uOutlineInEcho > 0.5) {
-      float proximity = smoothstep(0.55, 1.65, distance(cameraPosition, vP));
+      float proximity = smoothstep(0.68, 1.38, distance(cameraPosition, vP));
       float grain = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
       if (proximity <= grain || (uEcho > 0.15 &&
           abs(vTexture.y * 2.0 - 1.0) <= smoothstep(0.15, 0.72, uEcho))) discard;
@@ -280,12 +287,14 @@ export function makePond({ reflections = true, compact = false } = {}) {
         float cloud = smoothstep(0.38, 1.22, haze(a)) * (1.0 - smoothstep(0.25, 0.67, d.y));
         color = mix(color, vec3(0.84, 0.71, 0.92), cloud * 0.48);
         float sun = max(0.0, dot(uSun, d));
-        float evening = smoothstep(0.04, 0.58, uDusk);
+        float evening = smoothstep(0.0, 0.38, uDusk);
         vec3 sunset = mix(vec3(0.95, 0.32, 0.16), vec3(0.24, 0.20, 0.48), height);
         color = mix(color, sunset + vec3(0.30, 0.16, 0.09) * cloud * (1.0 - height), evening);
-        float disk = smoothstep(0.99930, 0.99958, sun) * smoothstep(-0.070, -0.040, d.y);
-        color += vec3(0.50, 0.18, 0.07) * pow(sun, 28.0)
-          + vec3(1.0, 0.74, 0.34) * disk * (1.0 - smoothstep(0.66, 0.80, uDusk));
+        float twilight = smoothstep(0.42, 0.80, uDusk);
+        color = mix(color, mix(vec3(0.41, 0.15, 0.30), vec3(0.063, 0.076, 0.22), height), twilight);
+        float disk = smoothstep(0.99955, 0.99965, sun) * smoothstep(-0.030, -0.024, d.y);
+        color += vec3(0.50, 0.18, 0.07) * pow(sun, 36.0) * (1.0 - twilight)
+          + vec3(1.0, 0.74, 0.34) * disk;
         vec3 night = mix(vec3(0.0017, 0.0034, 0.0070), vec3(0.0007, 0.0011, 0.0026), height);
         gl_FragColor = vec4(mix(color, night, uEcho), 1.0);
         #include <colorspace_fragment>
@@ -350,7 +359,7 @@ export function makePond({ reflections = true, compact = false } = {}) {
           day = mix(day, reflected * vec3(0.77, 0.79, 0.94), bounds * (0.20 + fresnel * 0.34));
         }
         float sunLane = max(0.0, dot(normalize(vec3(-view.x, view.y, -view.z)), uSun));
-        float evening = smoothstep(0.03, 0.49, uDusk);
+        float evening = smoothstep(0.0, 0.39, uDusk);
         day = mix(day, day * vec3(0.73, 0.52, 0.72), evening * 0.68);
         day += vec3(0.84, 0.32, 0.074) * pow(sunLane, 56.0) * (0.38 + 0.38 * r1 * r1)
           * evening * (1.0 - smoothstep(0.62, 0.85, uDusk));
@@ -1014,7 +1023,7 @@ export function makePond({ reflections = true, compact = false } = {}) {
     uTime.value = seconds;
     uEcho.value = amount;
     uDusk.value = dusk;
-    uSun.value.set(-0.26, THREE.MathUtils.lerp(0.29, -0.144, THREE.MathUtils.smoothstep(dusk, 0, 0.86)), -1).normalize();
+    uSun.value.set(-0.26, THREE.MathUtils.lerp(0.155, -0.11, THREE.MathUtils.smoothstep(dusk, 0, 0.91)), -1).normalize();
     const pulsing = age >= 0 && age <= ECHO_DURATION;
     uAge.value = pulsing ? age : -1;
     uAim.value = pulse?.aim ?? 2;
@@ -1039,6 +1048,7 @@ export function makePond({ reflections = true, compact = false } = {}) {
     const returnVisible = searching || (confirmed && response > 0);
     const perched=guidePhase==='hunt'&&phaseAge>=.9;
     let intensity=beacon;
+    if(guidePhase==='daylight')intensity=.26*THREE.MathUtils.smoothstep(dusk,.55,.65)*(1-THREE.MathUtils.smoothstep(dusk,.78,.92));
     if(guidePhase==='hunt')intensity=perched?.93+.07*Math.sin(seconds*3):.48+.15*Math.cos(seconds*7);
     if(guidePhase==='discovery')intensity=(.77+.15*Math.sin(seconds*5))*THREE.MathUtils.smoothstep(phaseAge,0,.72);
     if(guidePhase==='found')intensity=.24;

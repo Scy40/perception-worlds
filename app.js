@@ -1,8 +1,8 @@
-import { pilotLamp, pathX, floorAt, scanDuration } from './cabin-route.mjs';
+import { pilotLamp, pathX, floorAt, scanDuration } from './cabin-route.mjs?survey=9';
 import * as THREE from './vendor/three.module.js';
 import { ReachGrab, EyeAim, Pinch, handCursor } from './gesture.mjs?survey=2';
-import { ECHO_DURATION, makePond, shore } from './pond.mjs?survey=3';
-import { eyeCenter, HeadWindow, WindowProjection, quietLook, followAngle } from './window-view.mjs';
+import { ECHO_DURATION, keepDockClear, makePond, shore } from './pond.mjs?survey=9';
+import { eyeCenter, HeadWindow, WindowProjection, quietLook, followAngle } from './window-view.mjs?survey=9';
 
 const $ = id => document.getElementById(id);
 const enableSound = $('enableSound');
@@ -52,8 +52,9 @@ let flightStart=new THREE.Vector3(),destination=new THREE.Vector3();
 let lastFrame=performance.now(),lastFaceAt=-Infinity,lastHandAt=-Infinity,lastVideo=-1,faceNext=true;
 
 let faceHold=420, handHold=400, previousFace=-Infinity, previousHand=-Infinity;
+let briefOcclusionUntil=-Infinity, missingFace=false;
 let visibilityEpoch=0;
-const facePresent=now=>tracker.neutral && now-lastFaceAt<faceHold;
+const facePresent=now=>tracker.neutral && (missingFace?now<briefOcclusionUntil:now-lastFaceAt<faceHold);
 let screen=null,palm=null,ready=false,lockUntil=0,missUntil=0,feedback='',noteUntil=0,anchored=false;
 let cameraBusy=false, retryAt=0, startupProblem='', generation=0;
 let introDrawn=false;
@@ -114,7 +115,7 @@ const stationViews = [
   {z:-37.2, aim:new THREE.Vector3(2.30,-4.14,-38.5)}
 ];
 const junctionZ = -27.65;
-const entranceAim = new THREE.Vector3(.76,-4.04,-33);
+const entranceAim = new THREE.Vector3(.02,-4.05,-33);
 const stationSigns = [
   {name:'育苗台', point:new THREE.Vector3(-.78,-3.98,-32.3), station:0},
   {name:'水培台', point:new THREE.Vector3(2.22,-3.98,-32.3), station:1}
@@ -128,7 +129,7 @@ let cabinLoad, cabinAttempts=0, enteringHouse=false;
 function loadCabin(){
   if(!cabinLoad){
     const attempt=cabinAttempts++;
-    cabinLoad=withTimeout(import('./cabin.mjs?survey=7&attempt='+attempt),30000)
+    cabinLoad=withTimeout(import('./cabin.mjs?survey=9&attempt='+attempt),30000)
       .catch(error=>{cabinLoad=null;throw error;});
   }
   return cabinLoad;
@@ -152,7 +153,7 @@ async function enterHouse(){
   saved=true;
   resetFocus();station=-1;scanning=chosenSign=null;pulse=null;echo=0;
   explorer.set(pathX(-18),0,-18);insect.copy(pilotLamp);
-  headingTo(plantPoint(house.teacher));yaw=turnTo;pitch=tiltTo;
+  headingTo(entranceAim);yaw=turnTo;pitch=tiltTo;
   changePhase('descent');labelsReady();
 }
 function labelsReady(){
@@ -185,7 +186,7 @@ function moveStation(next){
   changePhase('walk');
 }
 function confirmHouse(){
-  if(menu||scanning)return;
+  if(menu||scanning||house.radar.visible)return;
   if(chosenSign && focusAge<.12)return;
   if(chosenSign){moveStation(chosenSign.station);return;}
   const p=focusPlant;
@@ -198,7 +199,7 @@ function progressHouse(dt){
   const dest=atEntrance||station<0?junctionZ:stationViews[station].z;
   explorer.z+=clamp(dest-explorer.z,-dt*2.4,dt*2.4);
   explorer.x=pathX(explorer.z);explorer.y=floorAt(explorer.z)+1.3;
-  const aim=atEntrance?plantPoint(house.teacher):
+  const aim=atEntrance?(innerWidth<innerHeight?plantPoint(house.teacher):entranceAim):
     station<0?entranceAim:stationViews[station].aim;
   headingTo(aim);
   if(phase==='descent'){
@@ -222,7 +223,7 @@ function progressHouse(dt){
   if(scanning&&scanning.age>=scanDuration){
     viewed=scanning;scanning.scanned=true;
     if(scanning.extra){
-      signalText('变异警示 · '+scanning.finding[0]+(scanning.marked?' · 已归档':' · 再捏归档'));
+      signalText('变异警示 · '+scanning.finding[0]+(scanning.marked?' · 已归档':''));
     }else{
       signalText(scanning.kind+' · 与上次记录相符');
       note(0,615,.19,.085,0,.995);
@@ -255,7 +256,7 @@ function observeBeds(dt){
     if(item.tag.textContent!==caption)item.tag.textContent=caption;
   }
   // Position every label first, then read hit boxes in one layout pass.
-  if(scanning)candidate=scanning;
+  if(scanning || house.radar.visible)candidate=scanning||viewed;
   else if(old && pinch.target===old)candidate=old;
   else{
     const visible=items.filter(item=>!item.tag.hidden).map(item=>[item,item.tag.getBoundingClientRect()]);
@@ -303,7 +304,7 @@ function showAnomalyHint(dt){
   anomalyArrow.hidden=false;
 }
 function houseTarget(){
-  if(scanning)return null;
+  if(scanning||house.radar.visible)return null;
   if(chosenSign)return chosenSign;
   if(focusPlant?.demo && focusPlant.scanned)return null;
   return focusPlant;
@@ -316,8 +317,8 @@ function drawPinchRing(now,target){
 }
 
 function scanSound(){
-  note(0,265,.14,.13,0,1.25);
-  note(.14,670,.11,.10,0,1.28);
+  note(0,208,.18,.15,0,1.16);
+  note(.15,520,.10,.09,0,1.14);
 }
 function playScanCue({pitch,duration,bend,position,warning}){
   let pan=0;
@@ -598,6 +599,7 @@ function begin() {
   ensureAudio();
 }
 function resetTracking(){
+  briefOcclusionUntil=-Infinity;missingFace=false;
   previousFace=previousHand=lastFaceAt=lastHandAt=-Infinity;
   faceHold=420;handHold=400;
   tracker.reset();eyes.reset();pinch.reset();detector.reset();
@@ -699,15 +701,22 @@ function receiveTracking(kind,points,sampledAt){
 function applyTracking(kind,points,now){
   if(kind==='face'){
     facePoints=points;
-    tracker.update(facePoints,video.videoWidth/video.videoHeight,now);eyes.update(facePoints);
-    if(tracker.lastSeen===now && tracker.neutral){
+    const seen=tracker.update(facePoints,video.videoWidth/video.videoHeight,now);
+    eyes.update(facePoints);
+    if(seen && tracker.neutral){
       const c=eyeCenter(facePoints),w=Math.hypot(c.eyes[3].x-c.eyes[0].x,(c.eyes[3].y-c.eyes[0].y)*video.videoHeight/video.videoWidth);
       headYaw=clamp(((facePoints[1].x-c.x)/w-tracker.neutral.yaw)*2.2,-1.45,1.45);
       const relativeY=(facePoints[1].y-c.y)/w;
       if(!anchored){tracker.noseY=relativeY;anchored=true;}
       headTilt=clamp((tracker.noseY-relativeY)*1.65,-.48,.48);
       lastFaceAt=now;
+      missingFace=false;briefOcclusionUntil=-Infinity;
     }else{
+      if(!missingFace && now-lastFaceAt<faceHold && (pinch.target||phase==='found')){
+        briefOcclusionUntil=now+260;
+      }
+      missingFace=true;
+      if(now<briefOcclusionUntil)return;
       lastFaceAt=-Infinity;
       ready=false;palm=null;pinch.reset();detector.reset();releaseSince=heldOpen=handGone=0;
     }
@@ -745,8 +754,9 @@ function applyTracking(kind,points,now){
   drawPreview();
 }
 function catchAvailable(){return phase==='hunt'&&phaseTime>=900;}
-const sunsetDuration=21000;
-const sunsetView=new THREE.Vector3(-9,1.6,-34);
+const sunsetDuration=18400;
+const sunsetView=new THREE.Vector3(-8.1,1.15,-36);
+const duskFirefly=new THREE.Vector3(1.7,-.68,-5.4);
 const discoveryStart=new THREE.Vector3(1.75,-.79,-5.55);
 function echoActive(){
   return ['firstEcho','discovery','hunt','found','flight'].includes(phase);
@@ -782,8 +792,12 @@ function underPalm(depth){
 function advanceBay(dt){
   if(phase==='daylight'){
     const travel=THREE.MathUtils.smoothstep(phaseTime,0,sunsetDuration-800);
-    explorer.set(1.05*travel,.14*Math.sin(Math.PI*travel),-1.92*travel);
+    explorer.set(1.62*travel,.13*Math.sin(Math.PI*travel),-2.72*travel);
+    keepDockClear(explorer);
     headingTo(sunsetView);
+    insect.copy(duskFirefly);
+    insect.x+=.68*Math.sin((phaseTime-11000)*.00085);
+    insect.y+=.16*Math.sin(phaseTime*.002);
     if(phaseTime>=sunsetDuration+1000){
       insect.copy(locate(0).point);
       echo=1;
@@ -825,7 +839,7 @@ function advanceBay(dt){
     const t=clamp(phaseTime/4400,0,1);
     insect.lerpVectors(flightStart,destination,t*t*(3-2*t));insect.y+=.44*Math.sin(Math.PI*t);
     waypoint.copy(insect);waypoint.z=Math.min(explorer.z,waypoint.z+3.05);waypoint.y=0;
-    explorer.lerp(waypoint,1-Math.exp(-dt*2));steer(explorer);headingTo(insect);
+    explorer.lerp(waypoint,1-Math.exp(-dt*2));steer(explorer);keepDockClear(explorer);headingTo(insect);
     if(t===1){
       if(routeStop===targetCount)changePhase('end');
       else {optionalWait=0;changePhase('hunt');}
@@ -908,6 +922,7 @@ function drawUI(now,dt,present){
   $('palm').classList.toggle('reaching',phase==='hunt'&&ready);
   $('palm').textContent=phase==='found'?'':'✧';
   $('palmStatus').textContent=phase==='found'?'掌心有光':handVisible?'已看到手':'待伸手';
+  $('maskEdge').style.opacity=greenhousePhase()?house.lensShade():0;
   marker.hidden=true;
   $('aimDot').hidden=true;
   if(!present){
@@ -923,16 +938,17 @@ function drawUI(now,dt,present){
   const target=chosenSign?.point||(focusPlant?plantPoint(focusPlant):insect);
   screen=projectTarget(target);
   let hint='';
-  if(phase==='daylight')hint=phaseTime<8500?'用目光看看湖岸和花园':phaseTime<sunsetDuration?'看远岸的夕阳落下':'夜色落定，听一听';
-  if(phase==='firstEcho')hint='听回声掠过水面，叶缘和岸线短暂显形';
+  if(phase==='daylight')hint=phaseTime<9000?'夕阳正在落下，沿着湖岸看看':phaseTime<14500?'太阳沉到岸线后，水边有一点光':'夜色渐深，岸边的路慢慢隐去';
+  if(phase==='firstEcho')hint='夜色遮住了湖岸，听听蝙蝠的第一声回响';
   if(phase==='discovery')hint='水边有一点光，跟着它看';
   if(phase==='hunt')hint=!catchAvailable()?'它正在落下':ready?'手指轻轻合拢，像捧住一点光':gameTime<missUntil?'再张开手，让掌心光标靠近它':
     routeStop===0?'手放在脸侧或胸前，把掌心光标移近萤火虫':'再捧一次，或放下手跟它走';
   if(phase==='found')hint='移动掌心带着它走 · 张开手放飞';
   if(phase==='flight')hint=routeStop===1&&phaseTime<2500?'蝙蝠用回声辨认水岸 · 跟着回声与光迹走':'跟着光迹，听回声掠过湖面';
-  if(phase==='end'||phase==='descent')hint='沿着萤光，跟随步道下潜';
-  if(phase==='observe')hint=phaseTime<1600?'先看铃兰的枝头':'水纹掠过花瓣 · 确认它和上次记录是否一样';
-  if(phase==='teach')hint=house.teacher.scanned?'铃兰与上次记录相符':scanning?house.scanStage():focusPlant===house.teacher?'拇指和食指轻捏，启动激光雷达头盔':'看向「铃兰」，手放在胸前';
+  if(phase==='end')hint='萤火虫飞向巡检灯，跟着它去看看';
+  if(phase==='descent')hint='跟着巡检灯，沿玻璃步道下潜';
+  if(phase==='observe')hint=phaseTime<1600?'先看巡检台旁的铃兰':'水纹晃过枝头，确认这串花和上次记录是否一样';
+  if(phase==='teach')hint=house.teacher.scanned?'铃兰与上次记录相符':scanning?house.scanStage():focusPlant===house.teacher?'在胸前轻捏，启用巡检头盔':'看向「铃兰」，手放在胸前';
   if(phase==='choose')hint=chosenSign?'轻捏前往'+chosenSign.name:'选择花台';
   if(phase==='walk')hint=station<0?'返回过道':'前往'+stationNames[station];
   if(['inspect','complete'].includes(phase)){
@@ -996,30 +1012,34 @@ function frame(now){
     }
   }
   const indoors=greenhousePhase();
+  const comparison=indoors?house.comparisonTarget():null;
+  if(comparison&&present)headingTo(comparison);
   const gaze=eyes.point;
   const touring=phase==='daylight'||phase==='firstEcho';
-  const eyeWeight=indoors?.65:touring?1.05:(ready||phase==='found'?.15:.42);
-  const gazeRange=phase==='firstEcho'?.53:touring?1-0.47*THREE.MathUtils.smoothstep(phaseTime,7600,10500):1;
-  const headWeight=indoors?.20:touring?.09:1;
+  const catching=phase==='hunt'||phase==='found';
+  const eyeWeight=comparison?.24:indoors?.64:touring?.88:catching?.29:.42;
+  const gazeRange=phase==='firstEcho'?.53:touring?1-0.42*THREE.MathUtils.smoothstep(phaseTime,3100,8400):1;
+  const headWeight=indoors?.15:touring?.08:catching?.23:.56;
   const lookYaw=headWeight*quietLook(headYaw,.10,1.45)+gazeRange*quietLook(.5-(gaze?.x??.5),indoors?.14:.09,.46)*1.55*eyeWeight;
   const lookPitch=headWeight*quietLook(headTilt,.055,.48)+gazeRange*quietLook(.5-(gaze?.y??.5),indoors?.12:.07,.45)*.95*eyeWeight;
   const selected=focusPlant||chosenSign;
   const aiming=indoors && selected && !scanning;
   // Keep the camera stable while the hand confirms the selected card.
-  const settle=aiming && (focusAge<.45 || pinch.target===selected);
+  const settle=(aiming && (focusAge<.45 || pinch.target===selected))
+    || (indoors && house.scanSettling()) || (phase==='hunt' && ready);
   if(!settle){
-    yaw=followAngle(yaw,turnTo+lookYaw,dt,indoors?(aiming?.33:.65):1.25);
-    pitch=followAngle(pitch,tiltTo+lookPitch,dt,indoors?(aiming?.22:.42):.85);
+    yaw=followAngle(yaw,turnTo+lookYaw,dt,indoors?(aiming?.30:.58):catching?.42:.92);
+    pitch=followAngle(pitch,tiltTo+lookPitch,dt,indoors?(aiming?.20:.38):catching?.32:.62);
     const weight=1-Math.exp(-dt*(aiming?2.2:5));
-    viewShift.lerp(desiredShift.copy(pos).multiplyScalar(indoors?.19:.75),weight);
+    viewShift.lerp(desiredShift.copy(pos).multiplyScalar(indoors?.17:catching?.25:.32),weight);
   }
   windowView.viewFrom(viewShift,yaw,pitch,explorer);camera.updateMatrixWorld();
 
   const listening=echoActive();
   if(present && listening && !['found','discovery'].includes(phase) && gameTime>=nextEcho &&
       (phase!=='firstEcho'||!pulse))autoEcho();
-  const dusk=phase==='daylight'?clamp((phaseTime-4300)/(sunsetDuration-4300),0,1):0;
-  if(phase==='daylight')echo=THREE.MathUtils.smoothstep(dusk,.48,1);
+  const dusk=phase==='daylight'?clamp((phaseTime-1300)/(sunsetDuration-1300),0,1):0;
+  if(phase==='daylight')echo=THREE.MathUtils.smoothstep(dusk,.60,1);
   else if(present)echo+=((listening||phase==='end'||phase==='descent'?1:0)-echo)*(1-Math.exp(-frameSeconds*2.3));
   const age=pulse?(gameTime-pulse.at)/1000:-1;
   updatePond(gameTime/1000,echo,age,insect,started?1:0,listening?pulse:null,camera,phase=== 'hunt'?phaseTime/1000:-1,phase,phaseTime/1000,true,dusk);

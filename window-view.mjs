@@ -48,7 +48,7 @@ export class HeadWindow {
         this.neutral = { x: getMedian('x'), y: getMedian('y'), width: getMedian('width'), yaw: getMedian('yaw') };
         this.samples = [];
       }
-      return;
+      return true;
     }
 
     const base = this.neutral;
@@ -60,6 +60,7 @@ export class HeadWindow {
     if (Math.abs(yaw - base.yaw) < 0.23) {
       this.target.z = clamp(quiet((relativeDistance - 1) * 2.2), MAX_SHIFT.z);
     }
+    return true;
   }
 
   step(dt, now, hold = HOLD_MS) {

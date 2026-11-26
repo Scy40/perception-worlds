@@ -27,6 +27,7 @@ h1{font:400 58px SimSun,serif;margin:0}.privacy,.camera-legend,#count{font-size:
 #chapterMenu{position:fixed;inset:0;background:#101d2ac7;display:grid;place-items:center;z-index:10}.chapterPanel{width:min(480px,88vw);padding:24px;background:#172d35;border:1px solid #bedaca5c;border-radius:18px;text-align:center}.chapterPanel h2{font:normal 30px SimSun,serif;margin:0}.chapterPanel p{font-size:13px;color:#bcd0c9}.chapterCards{display:flex;gap:12px;margin:15px 0}.chapterCard{flex:1}.thumb{height:65px;border-radius:8px;margin-bottom:4px}.bay{background:center/cover url('./assets/sleeping-lotus.png')}.glass{background:radial-gradient(ellipse at bottom,#6e9e87,#244e54 70%);color:#acd5b7;font:52px Georgia}#palm{z-index:12}
 
 #guideText,#echoStatus{position:fixed;left:50%;transform:translateX(-50%);pointer-events:none;text-align:center}
+#maskEdge{position:fixed;inset:0;pointer-events:none;opacity:0;background:radial-gradient(ellipse at 50% 47%,transparent 49%,#070b14a8 77%,#05070d 100%)}
 #guideText{bottom:7vh;padding:9px 17px;color:#fff6de;background:#152c33ed;border:1px solid #c1ded34a;border-radius:18px;font:500 clamp(13px,1.18vw,18px)/1.5 "Microsoft YaHei UI",sans-serif;max-width:49vw;z-index:3}
 #echoStatus{top:12vh;font-size:12px;color:#c5f4ee;text-shadow:0 1px 5px #071b23}
 #guideText:empty,#echoStatus:empty{display:none}

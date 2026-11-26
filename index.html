@@ -1,10 +1,11 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>睡莲湾 · 同一空间，不同的感知世界</title><link rel="icon" href="data:,"><link rel="stylesheet" href="./style.css?survey=5"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>睡莲湾 · 同一空间，不同的感知世界</title><link rel="icon" href="data:,"><link rel="stylesheet" href="./style.css?survey=9"></head>
 <body>
 <canvas id="world" aria-label="睡莲湾三维场景"></canvas><div class="scrim"></div>
 <header><div class="identity"><span class="identity-mark">◉</span>同一空间，不同的感知世界</div></header>
 <section id="intro" class="intro"><h1>睡莲湾</h1><p id="startup" role="status">正在加载场景程序…</p><button type="button" id="startupRetry" hidden onclick="location.reload()">重新加载</button><p class="privacy">摄像头画面仅在本机处理</p></section>
 <main id="experience" hidden>
+<div id="maskEdge" aria-hidden="true"></div>
 <aside class="route"><div id="mode">睡莲湾</div><canvas id="map" width="352" height="146" aria-label="路线图，显示当前位置与下一站"></canvas><p id="task"></p><small id="count"></small><div id="backDoor" class="chapterAction">章节菜单</div><button id="enableSound" class="chapterAction" type="button" hidden>开启声音</button></aside>
 <div id="marker" hidden><span id="ring"></span><span id="arrow" aria-hidden="true"></span><span id="bubble"></span></div>
 <div id="palm" hidden>✧</div><p id="tracking" role="status"></p>
@@ -22,4 +23,4 @@ function entryProblem(message) {
   document.getElementById('startupRetry').hidden = false;
 }
 window.bootWait = setTimeout(() => entryProblem('场景程序加载超时，请重试。'), 15000);
-</script><script async src="./boot.js?survey=8" onerror="entryProblem('未能下载场景程序，请检查网络后重试。')"></script></body></html>
+</script><script async src="./boot.js?survey=9" onerror="entryProblem('未能下载场景程序，请检查网络后重试。')"></script></body></html>
