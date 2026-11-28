@@ -1,11 +1,18 @@
-import { pilotLamp, pathX, floorAt, scanDuration } from './cabin-route.mjs?survey=9';
+import { pilotLamp, pathX, floorAt } from './cabin-route.mjs?survey=9';
 import * as THREE from './vendor/three.module.js';
 import { ReachGrab, EyeAim, Pinch, handCursor } from './gesture.mjs?survey=2';
-import { ECHO_DURATION, keepDockClear, makePond, shore } from './pond.mjs?survey=9';
+import { ECHO_DURATION, keepDockClear, makePond, shore } from './pond.mjs?survey=10';
 import { eyeCenter, HeadWindow, WindowProjection, quietLook, followAngle } from './window-view.mjs?survey=9';
 
 const $ = id => document.getElementById(id);
 const enableSound = $('enableSound');
+const anomalyArrow=$('anomalyMarker');
+const findingBubble=$('findingBubble');
+const surveyDock=$('surveyDock'), surveyList=$('surveyList'), surveyToggle=$('surveyListToggle');
+const surveyPrimary=$('surveyPrimary'), surveyCompare=$('surveyCompare');
+const surveyControls=['surveyPrimary','surveyCompare','surveyListToggle','anomalyMarker'];
+for(const id of surveyControls)$(id).addEventListener('click',()=>chapterAction(id));
+$('backDoor').addEventListener('click',()=>chapterAction('backDoor'));
 const video = $('camera');
 const canvas = $('world'), overlay = $('trackingOverlay'), pen = overlay.getContext('2d');
 const startup = window.lotusStartup;
@@ -13,6 +20,7 @@ $('startup').dataset.modules='ready';
 startup.stage('正在绘制湖面和睡莲…','湖面场景准备超时，请重新加载。');
 await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
 const compact = matchMedia('(pointer: coarse)').matches || (navigator.hardwareConcurrency || 8) <= 4;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: !compact, powerPreference: 'low-power' });
@@ -41,7 +49,7 @@ const detector=new ReachGrab(), eyes=new EyeAim();
 const explorer=new THREE.Vector3(), insect=new THREE.Vector3(), waypoint=new THREE.Vector3(), projected=new THREE.Vector3();
 const currentNotes=new Set();
 const handPaths=[[0,1,2,3,4],[0,5,6,7,8],[5,9,10,11,12],[9,13,14,15,16],[13,17,18,19,20],[17,0]];
-const cabinPhases=['descent','observe','teach','choose','walk','inspect','complete'];
+const cabinPhases=['descent','observe','teach','choose','walk','inspect','complete','exitWalk','exitReady'];
 const greenhousePhase=()=>cabinPhases.includes(phase);
 const clamp=THREE.MathUtils.clamp;
 let stream,hand,face,facePoints,handPoints,house;
@@ -55,7 +63,7 @@ let faceHold=420, handHold=400, previousFace=-Infinity, previousHand=-Infinity;
 let briefOcclusionUntil=-Infinity, missingFace=false;
 let visibilityEpoch=0;
 const facePresent=now=>tracker.neutral && (missingFace?now<briefOcclusionUntil:now-lastFaceAt<faceHold);
-let screen=null,palm=null,ready=false,lockUntil=0,missUntil=0,feedback='',noteUntil=0,anchored=false;
+let screen=null,palm=null,ready=false,lockUntil=0,missUntil=0,anchored=false;
 let cameraBusy=false, retryAt=0, startupProblem='', generation=0;
 let introDrawn=false;
 
@@ -69,12 +77,14 @@ function headingTo(target){
 let saved=false;
 try{saved=localStorage.getItem('lotus-bay:glasshouse')==='1';}catch{}
 let menu=false, focusPlant=null, viewed=null, dwell=0, actionKey='';
+let reviewing=false,viewHeight=innerHeight;
 const checkpoints=['backDoor','fromBay','fromHouse','resumeRun'];
 function resetFocus(){focusPlant=viewed=null;dwell=0;ready=false;detector.reset();screen=null;}
 function openMenu(open){
   menu=open;ready=false;pinch.reset();
   if(anomalyArrow)anomalyArrow.hidden=true;
-  $('scanRecord').hidden=true;
+  findingBubble.hidden=true;
+  surveyDock.inert=open;
   $('menuTitle').textContent=phase==='complete'?'温室 · 自由探索':'选择体验起点';
   $('fromBay').textContent=phase==='complete'?'回到睡莲湾':'从睡莲湾开始';actionKey='';detector.reset();silence();
   $('plantLabels').hidden=open;$('guideText').hidden=open;$('echoStatus').hidden=open;$('aimDot').hidden=true;
@@ -85,25 +95,31 @@ function openMenu(open){
   if(open)audio?.suspend();else if(soundOn)ensureAudio();
 }
 function chapterAction(id){
+  if(id==='surveyListToggle'){setSurveyList(surveyList.hidden);return;}
+  if(id==='surveyCompare'||id==='anomalyMarker'){comparePlant();return;}
+  if(id==='surveyPrimary'){useSurveyPrimary();return;}
   if(id==='backDoor'){openMenu(true);return;}
   if(id==='fromHouse'&&!saved)return;
   openMenu(false);
   if(id==='fromBay')begin();
   if(id==='fromHouse')enterHouse();
 }
-function controlAt(point){
-  if(!point)return '';
-  for(const id of menu?checkpoints.slice(1):['backDoor']){
-    if(id==='fromHouse'&&!saved)continue;
-    const r=(menu&&['fromBay','fromHouse'].includes(id)?$(id).parentElement:$(id)).getBoundingClientRect(),x=point.x*innerWidth,y=point.y*innerHeight;
-    if(x>=r.left-7&&x<=r.right+7&&y>=r.top-6&&y<=r.bottom+6)return id;
-  }
-  return '';
+function hitControl(id,point){
+  const node=$(id);
+  if(!point||node.hidden||node.disabled||(id==='fromHouse'&&!saved))return '';
+  const r=(menu&&['fromBay','fromHouse'].includes(id)?node.parentElement:node).getBoundingClientRect();
+  const x=point.x*innerWidth,y=point.y*innerHeight;
+  return r.width&&r.height&&x>=r.left-7&&x<=r.right+7&&y>=r.top-6&&y<=r.bottom+6?id:'';
 }
-function menuHand(now,pressed){
-  const id=controlAt(palm);
+function controlAt(point){
+  if(menu)return checkpoints.slice(1).find(id=>hitControl(id,point))||'';
+  if(!greenhousePhase())return hitControl('backDoor',point);
+  if(pinch.target==='anomalyMarker'&&!anomalyArrow.hidden&&!anomalyArrow.disabled)return 'anomalyMarker';
+  return hitControl('anomalyMarker',eyes.point)||['backDoor',...surveyControls].find(id=>hitControl(id,point))||'';
+}
+function menuHand(now,pressed,id){
   if(actionKey!==id){detector.reset();actionKey=id;}
-  for(const k of checkpoints)$(k).classList.toggle('hot',k===id);
+  for(const k of [...checkpoints,...surveyControls])$(k).classList.toggle('hot',k===id);
   if(!id&&!menu)return false;
   const g=detector.update(handPoints,video.videoWidth/video.videoHeight,!!id,now,handHold);
   if(id&&(pressed||(!greenhousePhase()&&g?.action==='grab'))&&facePresent(now))chapterAction(id);
@@ -123,13 +139,14 @@ const stationSigns = [
 let station=-1, chosenSign=null, scanning=null, focusAge=0;
 let nextHouseFocus=null, nextHouseFocusAge=0;
 const crossSign={name:'',point:new THREE.Vector3(),station:0};
-let anomalyArrow;
+const exitAim=new THREE.Vector3(.76,-3.84,-41.64);
+const exitStopZ=-38.55;
 const returnSign={name:'回到过道',point:new THREE.Vector3(),station:-1};
 let cabinLoad, cabinAttempts=0, enteringHouse=false;
 function loadCabin(){
   if(!cabinLoad){
     const attempt=cabinAttempts++;
-    cabinLoad=withTimeout(import('./cabin.mjs?survey=9&attempt='+attempt),30000)
+    cabinLoad=withTimeout(import('./cabin.mjs?survey=11&attempt='+attempt),30000)
       .catch(error=>{cabinLoad=null;throw error;});
   }
   return cabinLoad;
@@ -141,7 +158,7 @@ async function enterHouse(){
   startup.stage('正在准备第二幕 · 水下温室…','温室加载超时，请重试。',32000);
   try{
     const {makeCabin}=await loadCabin();
-    house??=makeCabin(scene,{compact});
+    house??=makeCabin(scene,{compact,reducedMotion});
   }catch(error){
     console.warn(error);
     startup.problem('温室加载失败，请检查网络后重试。',enterHouse);
@@ -151,55 +168,93 @@ async function enterHouse(){
   house.restartSurvey();house.open();house.arrange();
   try{localStorage.setItem('lotus-bay:glasshouse','1');}catch{}
   saved=true;
-  resetFocus();station=-1;scanning=chosenSign=null;pulse=null;echo=0;
+  resetFocus();station=-1;scanning=chosenSign=null;reviewing=false;pulse=null;echo=0;
+  setSurveyList(false);surveyList.replaceChildren();
   explorer.set(pathX(-18),0,-18);insect.copy(pilotLamp);
   headingTo(entranceAim);yaw=turnTo;pitch=tiltTo;
   changePhase('descent');labelsReady();
 }
 function labelsReady(){
   const root=$('plantLabels');root.replaceChildren();
-  anomalyArrow=document.createElement('span');anomalyArrow.className='anomalyArrow';
-  anomalyArrow.setAttribute('aria-hidden','true');anomalyArrow.hidden=true;root.appendChild(anomalyArrow);
+  anomalyArrow.hidden=true;
   for(const item of [...house.pots,...stationSigns,crossSign,returnSign]){
-    const tag=document.createElement('span');
-    tag.className='plantLabel';tag.hidden=true;root.appendChild(tag);item.tag=tag;
+    const tag=document.createElement('button');
+    tag.type='button';tag.className='plantLabel';tag.hidden=true;root.appendChild(tag);item.tag=tag;
+    tag.addEventListener('click',()=>{
+      chosenSign=item.point?item:null;focusPlant=item.group?item:null;
+      confirmHouse(true);
+    });
   }
 }
 function plantPoint(p){
   return p.group.position.clone().add(new THREE.Vector3(0,.43,0));
 }
 function plantProgress(){return house.pots.filter(p=>p.marked).length;}
-function bedsRecorded(){return new Set(house.pots.filter(p=>p.marked).map(p=>p.station)).size;}
-function recordCount(){return '花台 '+bedsRecorded()+'/2 · 发现 '+plantProgress()+'/'+house.pots.filter(p=>p.extra).length;}
+function surveyComplete(){return house.pots.every(p=>!p.extra||p.marked);}
+function recordCount(){return surveyComplete()?'巡检完成':plantProgress()?'继续查找形态变化':'寻找形态变化';}
+function specimenLabel(plant){
+  if(plant.demo)return plant.kind;
+  const sameKind=house.pots.filter(p=>!p.demo&&p.station===plant.station&&p.kind===plant.kind);
+  if(sameKind.length<2)return plant.kind;
+  return (sameKind[0]===plant?'靠入口的':'靠内的')+plant.kind;
+}
+function specimenSymbol(plant){
+  if(plant.marked)return '✓';
+  if(!plant.scanned)return '◇';
+  return plant.extra?'✦':'○';
+}
+function specimenTag(plant){
+  const name=specimenLabel(plant);
+  if(name===plant.kind)return name;
+  return plant.kind+(name.startsWith('靠入口')?' · 近侧':' · 内侧');
+}
 function markPlant(p){
   if(!p.extra||p.marked)return;
   p.marked=true;
-  if(bedsRecorded()===2 && phase!=='complete')changePhase('complete');
-  signalText(p.kind+' · '+p.finding[0]+'已归档');
+  if(surveyComplete() && phase!=='complete'){house.unlockExit();changePhase('complete');}
   $('count').textContent=recordCount();
   note(0,850,.16,.14);note(.15,1140,.19,.12);
 }
 function moveStation(next){
   if(anomalyArrow)anomalyArrow.hidden=true;
-  station=next;viewed=focusPlant=chosenSign=null;focusAge=0;
-  house.restoreView();
+  station=next;reviewing=false;viewed=focusPlant=chosenSign=null;focusAge=0;
+  house.clearReading();house.setFocus(null);
   changePhase('walk');
 }
-function confirmHouse(){
-  if(menu||scanning||house.radar.visible)return;
+function comparePlant(){
+  if(menu||scanning||house.changingView()||!viewed?.scanned||!viewed.extra)return;
+  reviewing=house.radarEnabled();
+  house.setRadar(!reviewing,undefined,true);
+}
+function useSurveyPrimary(){
+  if(menu||scanning||reviewing||house.changingView())return;
+  if(phase==='exitReady'){moveStation(-1);return;}
+  if(surveyComplete()&&phase!=='exitWalk'){
+    viewed=focusPlant=chosenSign=null;
+    house.clearReading();house.setFocus(null);
+    house.setRadar(false);changePhase('exitWalk');return;
+  }
+  if(!chosenSign&&viewed?.extra&&!viewed.marked){markPlant(viewed);return;}
+  confirmHouse(true);
+}
+function confirmHouse(explicit=false){
+  if(menu||scanning||reviewing||house.changingView())return;
   if(chosenSign && focusAge<.12)return;
   if(chosenSign){moveStation(chosenSign.station);return;}
-  const p=focusPlant;
+  const p=focusPlant||(explicit?viewed:null);
   if(!p || !['teach','inspect','complete'].includes(phase) || (p.demo && p.scanned))return;
-  if(p.scanned && p.extra && !p.marked){markPlant(p);return;}
-  scanning=p;house.scanAt(explorer,p);p.age=0;scanSound();
+  if(p.scanned && p.extra && !p.marked && viewed===p && house.radarEnabled()){markPlant(p);return;}
+  const entering=!house.radarEnabled();
+  scanning=p;house.scanAt(entering?plantPoint(p):explorer,p);
+  if(entering)scanSound();
 }
 function progressHouse(dt){
   const atEntrance=['descent','observe','teach'].includes(phase);
-  const dest=atEntrance||station<0?junctionZ:stationViews[station].z;
+  const atExit=phase==='exitWalk'||phase==='exitReady';
+  const dest=atExit?exitStopZ:atEntrance||station<0?junctionZ:stationViews[station].z;
   explorer.z+=clamp(dest-explorer.z,-dt*2.4,dt*2.4);
   explorer.x=pathX(explorer.z);explorer.y=floorAt(explorer.z)+1.3;
-  const aim=atEntrance?(innerWidth<innerHeight?plantPoint(house.teacher):entranceAim):
+  const aim=atExit?exitAim:atEntrance?(innerWidth<innerHeight?plantPoint(house.teacher):entranceAim):
     station<0?entranceAim:stationViews[station].aim;
   headingTo(aim);
   if(phase==='descent'){
@@ -218,20 +273,15 @@ function progressHouse(dt){
       crossSign.point.y+=.48;
       returnSign.point.copy(aim);returnSign.point.y-=.61;
     }
-    changePhase(station<0?'choose':bedsRecorded()===2?'complete':'inspect');
+    changePhase(station<0?'choose':surveyComplete()?'complete':'inspect');
   }
-  if(scanning&&scanning.age>=scanDuration){
+  if(phase==='exitWalk'&&Math.abs(dest-explorer.z)<.05)changePhase('exitReady');
+  if(scanning&&house.scanReady()){
     viewed=scanning;scanning.scanned=true;
-    if(scanning.extra){
-      signalText('变异警示 · '+scanning.finding[0]+(scanning.marked?' · 已归档':''));
-    }else{
-      signalText(scanning.kind+' · 与上次记录相符');
-      note(0,615,.19,.085,0,.995);
-    }
     scanning=null;
   }
-  if(phase==='teach'&&house.teacher.scanned&&!house.radar.visible){
-    house.restoreView();resetFocus();focusAge=0;changePhase('choose');
+  if(phase==='teach'&&house.teacher.scanned&&house.scanReady()){
+    resetFocus();focusAge=0;changePhase('choose');
   }
 }
 function observeBeds(dt){
@@ -249,14 +299,18 @@ function observeBeds(dt){
     item.tag.hidden=!visible;
     if(!visible)continue;
     item.tag.classList.toggle('returnControl',item===returnSign);
+    item.tag.classList.toggle('specimenTag',!sign);
+    item.tag.classList.toggle('tagLeft',!sign&&pt.x>.55);
     item.tag.style.left=item===returnSign?'68%':pt.x*100+'%';item.tag.style.top=item===returnSign?'8%':pt.y*100+'%';
     item.tag.classList.toggle('discovery',!!(item.scanned && item.extra));
-    const caption=sign?item.name:item.marked?item.kind+' · 异常已归档':!item.scanned?item.kind:
-      item.extra?item.kind+' · 记录异常':item.kind+' · 正常';
+    const caption=sign?item.name:specimenTag(item);
     if(item.tag.textContent!==caption)item.tag.textContent=caption;
+    const name=sign?item.name:item.demo?item.kind:stationNames[item.station]+' · '+specimenLabel(item);
+    if(item.tag.title!==name)item.tag.title=name;
+    item.tag.disabled=!!scanning||reviewing||house.changingView();
   }
   // Position every label first, then read hit boxes in one layout pass.
-  if(scanning || house.radar.visible)candidate=scanning||viewed;
+  if(scanning)candidate=scanning;
   else if(old && pinch.target===old)candidate=old;
   else{
     const visible=items.filter(item=>!item.tag.hidden).map(item=>[item,item.tag.getBoundingClientRect()]);
@@ -281,30 +335,78 @@ function observeBeds(dt){
       candidate=old;
     }else if(!old && nextHouseFocusAge<.16)candidate=null;
   }
+  // Hold an unresolved finding while the visitor looks from the plant to its controls.
+  if(!scanning&&!candidate?.point&&viewed?.extra&&(reviewing||!viewed.marked))candidate=viewed;
   focusAge=old===candidate?focusAge+dt:0;
   focusPlant=candidate?.group?candidate:null;
   chosenSign=candidate?.point?candidate:null;
+  house.setFocus(focusPlant);
   for(const item of [...house.pots,...stationSigns,crossSign,returnSign]){
     item.tag.classList.toggle('selected',item===candidate);
   }
-  showAnomalyHint(dt);
+  showAnomalyHint();
   for(let i=0;i<house.bedLights.length;i++)house.bedLights[i].material.opacity=chosenSign?.station===i ? .95 : .26;
 }
 
 
-function showAnomalyHint(dt){
+function showAnomalyHint(){
   anomalyArrow.hidden=true;
-  if(!['inspect','complete'].includes(phase)||scanning||house.radar.visible)return;
-  const plant=focusPlant||viewed;
-  if(!plant?.scanned || !plant.extra || plant.station!==station)return;
+  const plant=viewed;
+  if(scanning||!plant?.scanned||!plant.extra||plant.station!==station)return;
   const tip=projectTarget(plant.group.localToWorld(plant.target.clone()));
   if(!tip.inside)return;
   anomalyArrow.style.left=tip.x*100+'%';anomalyArrow.style.top=tip.y*100+'%';
-  anomalyArrow.textContent=plant.finding[0];
+  anomalyArrow.classList.toggle('markerLeft',tip.x>.72);
+  anomalyArrow.disabled=house.changingView();
+  const label=reviewing?'回到雷达对照':'用肉眼复看异常';
+  if(anomalyArrow.getAttribute('aria-label')!==label)anomalyArrow.setAttribute('aria-label',label);
   anomalyArrow.hidden=false;
 }
+const findingSummaries={
+  '鹿角蕨':'原来的两叉叶尖展开成了扇形。',
+  '羽叶蕨':'原本向上的叶轴反卷，小叶也翻了面。',
+  '铃兰':'原先长钟形花的位置，展开了叶片。',
+  '披针叶草':'高叶底部多出了一簇短芽。'
+};
+const findingCorner=new THREE.Vector3();
+function findingBounds(plant){
+  const bounds={left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity};
+  for(const cloud of [plant.warningCloud,plant.archiveCloud]){
+    const geometry=cloud.geometry;
+    if(!geometry.boundingBox)geometry.computeBoundingBox();
+    const {min,max}=geometry.boundingBox;
+    for(const x of [min.x,max.x])for(const y of [min.y,max.y])for(const z of [min.z,max.z]){
+      findingCorner.set(x,y,z).project(camera);
+      const px=(.5+findingCorner.x*.5)*innerWidth,py=(.5-findingCorner.y*.5)*viewHeight;
+      bounds.left=Math.min(bounds.left,px);bounds.right=Math.max(bounds.right,px);
+      bounds.top=Math.min(bounds.top,py);bounds.bottom=Math.max(bounds.bottom,py);
+    }
+  }
+  return bounds;
+}
+function placeFindingBubble(){
+  const plant=viewed;
+  if(anomalyArrow.hidden||!surveyList.hidden||chosenSign||!plant){findingBubble.hidden=true;return;}
+  writeLabel($('findingTitle'),plant.finding[0]);
+  writeLabel($('findingText'),findingSummaries[plant.kind]);
+  findingBubble.hidden=false;
+  const bounds=findingBounds(plant);
+  const {offsetWidth:width,offsetHeight:height}=findingBubble;
+  const [route,preview,status]=[document.querySelector('.route'),$('cameraPreview'),surveyDock];
+  const obstacles=[bounds,anomalyArrow.getBoundingClientRect(),route.getBoundingClientRect(),
+    preview.getBoundingClientRect(),status.getBoundingClientRect()];
+  for(const tag of $('plantLabels').children)if(!tag.hidden)obstacles.push(tag.getBoundingClientRect());
+  const top=clamp(bounds.top,42,Math.max(42,viewHeight-height-12));
+  const left=clamp((bounds.left+bounds.right-width)*.5,12,innerWidth-width-12);
+  const spots=[[bounds.right+28,top],[bounds.left-width-28,top],
+    [left,bounds.top-height-16],[left,bounds.bottom+16]];
+  const position=spots.find(([x,y])=>x>=12&&x+width<=innerWidth-12&&y>=42&&y+height<=viewHeight-10&&
+    obstacles.every(r=>r.right<=r.left||x+width+6<=r.left||x-6>=r.right||y+height+6<=r.top||y-6>=r.bottom));
+  if(!position){findingBubble.hidden=true;return;}
+  findingBubble.style.left=position[0]+'px';findingBubble.style.top=position[1]+'px';
+}
 function houseTarget(){
-  if(scanning||house.radar.visible)return null;
+  if(scanning||reviewing||house.changingView())return null;
   if(chosenSign)return chosenSign;
   if(focusPlant?.demo && focusPlant.scanned)return null;
   return focusPlant;
@@ -568,20 +670,30 @@ function useFallback(){
   cameraProblem('正在切换摄像头识别模式…');
 }
 
+function surveyViewHeight(){
+  return surveyDock.hidden||surveyList.hidden?innerHeight:Math.max(1,Math.floor(surveyDock.getBoundingClientRect().top-8));
+}
 function resize() {
   introDrawn=false;
-  renderer.setPixelRatio(Math.min(devicePixelRatio,compact?.8:1,Math.sqrt(1500000/(innerWidth*innerHeight))));
-  renderer.setSize(innerWidth,innerHeight,false);
-  windowView.setViewport(innerWidth,innerHeight);
+  viewHeight=surveyViewHeight();
+  document.body.style.setProperty('--survey-space',innerHeight-viewHeight+'px');
+  renderer.setPixelRatio(Math.min(devicePixelRatio,compact?.8:1,Math.sqrt(1500000/(innerWidth*viewHeight))));
+  renderer.setSize(innerWidth,viewHeight,false);
+  windowView.setViewport(innerWidth,viewHeight);
 }
 window.addEventListener('resize',resize);
-function signalText(text) { feedback=text; noteUntil=gameTime+1800; }
+new ResizeObserver(()=>{if(viewHeight!==surveyViewHeight())resize();}).observe(surveyDock);
 function changePhase(next,now=gameTime) {
   phase=next; phaseTime=0; phaseAt=now;
+  const indoors=greenhousePhase();
+  if(surveyDock.hidden===indoors){
+    surveyDock.hidden=!indoors;
+    document.body.classList.toggle('survey-mode',indoors);
+    resize();
+  }
   nextHouseFocus=null;nextHouseFocusAge=0;
   lockUntil=missUntil=0; ready=false;
   if(next!=='found')detector.reset();
-  feedback=''; noteUntil=0;
   $('mode').textContent=greenhousePhase()?'水下观测舱':
     ['end','daylight'].includes(phase)?'日常视角 · 睡莲湾':'蝙蝠 · 自动回声';
   $('task').textContent=phase==='hunt'&&routeStop>0?'可再捕捉，也可跟随':tasks[phase]||'';
@@ -590,6 +702,7 @@ function changePhase(next,now=gameTime) {
 
 }
 function begin() {
+  reviewing=false;anomalyArrow.hidden=true;findingBubble.hidden=true;
   resetFocus();$('plantLabels').replaceChildren();foundCount=routeStop=optionalWait=0;station=-1;scanning=chosenSign=null;pinch.reset(); explorer.set(0,0,0); house?.reset();
   insect.copy(locate(0).point);
   turnTo=yaw=0;tiltTo=pitch=0;
@@ -737,7 +850,7 @@ function applyTracking(kind,points,now){
     const target=heldTarget || control || (!menu && indoors?houseTarget():null);
     const pressed=pinch.update(handPoints,aspect,now,facePresent(now)?target:null,indoors?320:55,handHold);
     if(pressed && indoors)ringFlashUntil=performance.now()+240;
-    if(!heldTarget&&menuHand(now,pressed)){drawPreview();return;}
+    if(!heldTarget&&menuHand(now,pressed,control)){drawPreview();return;}
     if(!facePresent(now)){ready=false;return;}
     if(greenhousePhase()){if(pressed)confirmHouse();drawPreview();return;}
     const radius=clamp(innerHeight*(ready?.21:.17),60,185);
@@ -825,16 +938,17 @@ function advanceBay(dt){
     }
     insect.lerp(waypoint,1-Math.exp(-dt*9));headingTo(locate(routeStop).point);
     if(routeStop>0){
+      const finalPerch=routeStop===targetCount-1;
       const reaching=palm&&distanceTo(palm)<innerHeight*.23;
       if(reaching)optionalWait=0;else optionalWait+=dt;
       // Later stops offer another catch. A resting hand cannot hold the route forever.
-      if(optionalWait>5.8 || phaseTime>=10000)startFlight();
+      if(optionalWait>(finalPerch?8:6.5) || phaseTime>=(finalPerch?15000:11500))startFlight();
     }
   }else if(phase==='found'){
     if(palm){
       handGone=0;insect.lerp(underPalm(1.5),1-Math.exp(-dt*12));
     }else handGone+=dt;
-    if(phaseTime>520 && (heldOpen>=.1||handGone>.95))startFlight();
+    if(phaseTime>=1050 && (heldOpen>=.23||handGone>1.7))startFlight();
   }else if(phase==='flight'){
     const t=clamp(phaseTime/4400,0,1);
     insect.lerpVectors(flightStart,destination,t*t*(3-2*t));insect.y+=.44*Math.sin(Math.PI*t);
@@ -870,11 +984,12 @@ function projectTarget(target){
   const lateral=projected.x,up=projected.y;
   projected.copy(target).project(camera);
   const x=.5+projected.x/2,y=.5-projected.y/2;
+  const height=viewHeight/innerHeight;
   const inside=!rear && x>.065&&x<.935&&y>.1&&y<.91;
-  if(inside)return {x,y,inside};
+  if(inside)return {x,y:y*height,inside};
   let dx=rear?(Math.abs(lateral)<.001?1:lateral):x-.5,dy=rear?-up:y-.5;
   const scale=Math.max(Math.abs(dx)/.42,Math.abs(dy)/.36,.001);
-  return {x:.5+dx/scale,y:.5+dy/scale,inside,angle:Math.atan2(dy*innerHeight,dx*innerWidth)*180/Math.PI};
+  return {x:.5+dx/scale,y:(.5+dy/scale)*height,inside,angle:Math.atan2(dy*viewHeight,dx*innerWidth)*180/Math.PI};
 }
 let lastMapAt=-Infinity;
 function drawMap(){
@@ -890,7 +1005,7 @@ function drawMap(){
   const route=[{x:0,z:0},...stops.map(v=>({x:v.x,z:v.z+3.05})),pilotLamp,{x:.78,z:-27.05},{x:.78,z:-33.85}];
   line(route);ctx.lineWidth=4;ctx.strokeStyle='#97c7b9';ctx.stroke();
   const places=[...stops,pilotLamp,{x:.72,z:-29.1},{x:.72,z:-38}];
-  const index=greenhousePhase()?(['descent','observe','teach'].includes(phase)?4:5):Math.min(routeStop,3);
+  const index=greenhousePhase()?targetCount+(['descent','observe','teach'].includes(phase)?1:2):Math.min(routeStop,targetCount);
   places.forEach((v,i)=>{ctx.beginPath();ctx.arc(...at(v),i===index?5:3,0,Math.PI*2);ctx.fillStyle=i===index?'#ffc76f':'#9db4ae';ctx.fill();});
   ctx.font='16px "Microsoft YaHei", sans-serif';ctx.fillStyle='#dcece6';
   ctx.fillText('睡莲湾',55,28);ctx.fillText('坡道',181,126);ctx.fillText('温室',267,52);
@@ -900,16 +1015,84 @@ function drawMap(){
   ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
 }
 
-let drawnRecord=null;
-function showRecord(){
-  const p=focusPlant||viewed;
-  const visible=['teach','inspect','complete'].includes(phase) && !scanning && p?.scanned && !chosenSign;
-  $('scanRecord').hidden=!visible;
-  if(!visible || drawnRecord===p)return;
-  drawnRecord=p;
-  $('scanRecord').classList.toggle('anomaly',p.extra);
-  $('scanName').textContent=p.kind+' · '+(p.extra?'变异警示':'记录相符');
-  $('scanDetail').textContent=p.finding?.[1]||'这株植物的形态与上次扫描相符。';
+function setSurveyList(open){
+  surveyList.hidden=!open;
+  surveyToggle.setAttribute('aria-expanded',String(open));
+  surveyToggle.textContent=open?'收起巡检单':'巡检单';
+  surveyDock.classList.toggle('listOpen',open);
+  resize();
+}
+function writeLabel(node,text){
+  if(node.textContent!==text)node.textContent=text;
+}
+let surveyListKey='';
+function renderSurveyList(){
+  if(surveyList.hidden)return;
+  const specimens=house.pots.filter(p=>!p.demo);
+  const key=specimens.map(p=>p.marked?'3':p.scanned?(p.extra?'2':'1'):'0').join('');
+  if(key===surveyListKey&&surveyList.hasChildNodes())return;
+  surveyListKey=key;
+  const sections=stationNames.map((name,station)=>{
+    const section=document.createElement('section');
+    const heading=document.createElement('h3'), list=document.createElement('ul');
+    const plants=specimens.filter(p=>p.station===station);
+    const complete=plants.every(p=>!p.extra||p.marked);
+    heading.textContent=name+(complete?' · 已巡检':'');
+    for(const plant of plants){
+      const item=document.createElement('li');
+      const status=plant.marked?'已归档 · '+plant.finding[0]:!plant.scanned?'待扫描':
+        plant.extra?'发现异常':'与旧记录相符';
+      item.textContent=specimenSymbol(plant)+' '+specimenLabel(plant)+' · '+status;
+      if(plant.scanned&&plant.extra){
+        const detail=document.createElement('small');
+        detail.textContent=plant.finding[1];item.append(detail);
+      }
+      list.append(item);
+    }
+    section.append(heading,list);return section;
+  });
+  surveyList.replaceChildren(...sections);
+}
+function drawSurvey(){
+  const done=surveyComplete();
+  const pending=viewed?.extra&&!viewed.marked;
+  const p=scanning||(reviewing||pending?viewed:focusPlant||viewed);
+  const finding=viewed?.extra&&viewed.scanned;
+  const changing=house.changingView();
+  let hint='',action='';
+  if(phase==='exitWalk')hint='沿步道前往上行门';
+  else if(phase==='exitReady'){hint='已抵达温室尽头的上行门';action='返回花台';}
+  else if(reviewing)hint=viewed.finding[0]+' · 看看这处形态在自然光下如何融入周围';
+  else if(scanning||changing)hint=house.scanStage();
+  else if(phase==='walk')hint=station<0?'正在返回过道':'正在前往'+stationNames[station];
+  else if(done){
+    hint='巡检完成 · 前往温室尽头的上行门';
+    action='前往上行门';
+  }else if(phase==='descent')hint='跟着巡检灯，沿玻璃步道下潜';
+  else if(phase==='observe')hint='先看看花台边的铃兰';
+  else if(chosenSign){hint='看向标记并轻捏确认';action=chosenSign.name;}
+  else if(phase==='choose')hint='选一座花台，扫描植物并归档变化';
+  else if(p){
+    const label=p.demo?p.kind:specimenLabel(p);
+    if(p===viewed&&p.extra){
+      hint=(p.marked?'已归档 · ':'发现变异 · ')+label+' · '+p.finding[0];
+      if(!p.marked)action='归档这项发现';
+    }else if(p.scanned&&!p.extra){
+      hint=label+' · 与旧记录相符';
+    }else{
+      hint=label+(p.demo?' · 轻捏开启巡检':' · 轻捏扫描，与旧记录比对');
+      action=p.demo?'开启铃兰巡检':'扫描这株植物';
+    }
+  }else hint=phase==='teach'?'看向铃兰，轻捏开启巡检':'看向植物名称，轻捏扫描';
+  writeLabel($('surveyGoal'),done?'巡检完成':'温室巡检');
+  writeLabel($('surveyHint'),hint);
+  surveyPrimary.hidden=!action;
+  writeLabel(surveyPrimary,action);
+  surveyCompare.hidden=!!scanning||!finding;
+  surveyCompare.disabled=changing;
+  writeLabel(surveyCompare,reviewing?'回到雷达对照':'用肉眼复看');
+  $('surveyStatus').classList.toggle('hasFinding',!!finding);
+  renderSurveyList();
 }
 function drawUI(now,dt,present){
   if(enableSound)enableSound.hidden=audio?.state!=='suspended';
@@ -925,15 +1108,20 @@ function drawUI(now,dt,present){
   $('maskEdge').style.opacity=greenhousePhase()?house.lensShade():0;
   marker.hidden=true;
   $('aimDot').hidden=true;
+  if(now-lastMapAt>=100){drawMap();lastMapAt=now;}
   if(!present){
     if(anomalyArrow)anomalyArrow.hidden=true;
-    focusPlant=chosenSign=nextHouseFocus=null;focusAge=nextHouseFocusAge=0;return;
+    findingBubble.hidden=true;
+    focusPlant=chosenSign=nextHouseFocus=null;focusAge=nextHouseFocusAge=0;
+    if(greenhousePhase()){house.setFocus(null);drawSurvey();}
+    return;
   }
   if(greenhousePhase()){
     $('mode').textContent=house.radar.visible?'激光雷达 · 点云视野':'温室 · 日常视野';
     observeBeds(dt);
+    drawSurvey();
+    placeFindingBubble();
   }
-  showRecord();
   drawPinchRing(now,greenhousePhase() && (controlAt(palm)||houseTarget()));
   const target=chosenSign?.point||(focusPlant?plantPoint(focusPlant):insect);
   screen=projectTarget(target);
@@ -943,24 +1131,10 @@ function drawUI(now,dt,present){
   if(phase==='discovery')hint='水边有一点光，跟着它看';
   if(phase==='hunt')hint=!catchAvailable()?'它正在落下':ready?'手指轻轻合拢，像捧住一点光':gameTime<missUntil?'再张开手，让掌心光标靠近它':
     routeStop===0?'手放在脸侧或胸前，把掌心光标移近萤火虫':'再捧一次，或放下手跟它走';
-  if(phase==='found')hint='移动掌心带着它走 · 张开手放飞';
+  if(phase==='found')hint=phaseTime<1050?'看看掌心的光，轻轻移动你的手':'张开手，让萤火虫飞出去';
   if(phase==='flight')hint=routeStop===1&&phaseTime<2500?'蝙蝠用回声辨认水岸 · 跟着回声与光迹走':'跟着光迹，听回声掠过湖面';
   if(phase==='end')hint='萤火虫飞向巡检灯，跟着它去看看';
-  if(phase==='descent')hint='跟着巡检灯，沿玻璃步道下潜';
-  if(phase==='observe')hint=phaseTime<1600?'先看巡检台旁的铃兰':'水纹晃过枝头，确认这串花和上次记录是否一样';
-  if(phase==='teach')hint=house.teacher.scanned?'铃兰与上次记录相符':scanning?house.scanStage():focusPlant===house.teacher?'在胸前轻捏，启用巡检头盔':'看向「铃兰」，手放在胸前';
-  if(phase==='choose')hint=chosenSign?'轻捏前往'+chosenSign.name:'选择花台';
-  if(phase==='walk')hint=station<0?'返回过道':'前往'+stationNames[station];
-  if(['inspect','complete'].includes(phase)){
-    if(scanning)hint=house.scanStage();
-    else if(chosenSign)hint='轻捏'+chosenSign.name;
-    else if(focusPlant)hint=focusPlant.scanned && focusPlant.extra && !focusPlant.marked?'再捏归档':'轻捏'+(focusPlant.scanned?'重看':'扫描')+focusPlant.kind;
-    else hint=phase==='complete'?'自由探索 · 轻捏植物扫描':'看向植物卡片，再在胸前轻捏';
-  }
-  if(house?.radar.visible&&greenhousePhase()&&!scanning)hint=house.scanStage();
-  if(gameTime<noteUntil)hint=feedback;
   $('guideText').textContent=hint;
-  $('guideText').classList.toggle('pinchDemo',phase==='teach'&&!scanning&&!house.teacher.scanned);
   const related=['discovery','hunt','flight','end','descent'].includes(phase);
   if(related){
     marker.hidden=false;
@@ -979,7 +1153,6 @@ function drawUI(now,dt,present){
     $('aimDot').style.left=(.5+clamp((eye?.x??.5)-.5,-.35,.35)*.55)*100+'%';
     $('aimDot').style.top=(.5+clamp((eye?.y??.5)-.5,-.3,.3)*.6)*100+'%';
   }
-  if(now-lastMapAt>=100){drawMap();lastMapAt=now;}
 }
 
 
@@ -1012,12 +1185,10 @@ function frame(now){
     }
   }
   const indoors=greenhousePhase();
-  const comparison=indoors?house.comparisonTarget():null;
-  if(comparison&&present)headingTo(comparison);
   const gaze=eyes.point;
   const touring=phase==='daylight'||phase==='firstEcho';
   const catching=phase==='hunt'||phase==='found';
-  const eyeWeight=comparison?.24:indoors?.64:touring?.88:catching?.29:.42;
+  const eyeWeight=indoors?.64:touring?.88:catching?.29:.42;
   const gazeRange=phase==='firstEcho'?.53:touring?1-0.42*THREE.MathUtils.smoothstep(phaseTime,3100,8400):1;
   const headWeight=indoors?.15:touring?.08:catching?.23:.56;
   const lookYaw=headWeight*quietLook(headYaw,.10,1.45)+gazeRange*quietLook(.5-(gaze?.x??.5),indoors?.14:.09,.46)*1.55*eyeWeight;
@@ -1026,7 +1197,7 @@ function frame(now){
   const aiming=indoors && selected && !scanning;
   // Keep the camera stable while the hand confirms the selected card.
   const settle=(aiming && (focusAge<.45 || pinch.target===selected))
-    || (indoors && house.scanSettling()) || (phase==='hunt' && ready);
+    || (indoors && (house.changingView()||scanning||reviewing)) || (phase==='hunt' && ready);
   if(!settle){
     yaw=followAngle(yaw,turnTo+lookYaw,dt,indoors?(aiming?.30:.58):catching?.42:.92);
     pitch=followAngle(pitch,tiltTo+lookPitch,dt,indoors?(aiming?.20:.38):catching?.32:.62);

@@ -17,7 +17,7 @@ function sheet(n,m,fn){
   const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(verts,3));
   g.setIndex(indices);g.computeVertexNormals();return g;
 }
-export function makeCabin(scene,{compact=false}={}){
+export function makeCabin(scene,{compact=false,reducedMotion=false}={}){
   const room=new T.Group(),exterior=new T.Group();
   scene.add(room);room.add(exterior);
   const time={value:0},age={value:9},origin={value:flower.clone()},scanBlend={value:0};
@@ -58,7 +58,7 @@ export function makeCabin(scene,{compact=false}={}){
         float glare=onFlower*ripple*observation*(1.-scanBlend);
         outgoingLight=mix(outgoingLight,vec3(.48,.73,.68),glare*.68);
         float fade=smoothstep(-.20,.72,scanEdge(waterPos));
-        outgoingLight=mix(outgoingLight,vec3(.0023,.005,.010),fade);
+        outgoingLight=mix(outgoingLight,vec3(.0023,.005,.010),fade*scanBlend);
         #include <opaque_fragment>`);
     };return mat;
   }
@@ -111,27 +111,16 @@ export function makeCabin(scene,{compact=false}={}){
   mesh(new T.SphereGeometry(.079,16,12).translate(...pilotLamp.toArray()),lamp);
   // The pressure bulkhead, seam bolts and three specimen cradles stay fixed across readings.
   box(.76,-3.8,-42,5.2,3.4,.19,enamel);
+  const exitLight=new T.MeshBasicMaterial({color:0xffd999,transparent:true,opacity:0,depthWrite:false});
+  box(.76,-4.11,-41.78,1.44,2.42,.17,alloy);
+  box(.76,-4.12,-41.665,1.25,2.26,.10,enamel);
+  box(.76,-4.13,-41.60,.019,2.20,.025,alloy);
+  box(.76,-3.13,-41.59,1.08,.035,.025,exitLight);
 
-  // The inspection visor sits beside the first specimen, within the same view.
-  const consoleX=1.67,consoleZ=-30.03;
-  const shell=finish(0x435760,.34,.42),visor=finish(0x192b3c,.49,.2);
-  const sensor=finish(0x8598a2,.63,.23);
-  box(consoleX,-4.93,consoleZ,.39,.72,.40,enamel);
-  mesh(new T.BoxGeometry(.69,.09,.47).translate(consoleX,-4.54,consoleZ),alloy);
-  mesh(new T.SphereGeometry(1,24,12).scale(.30,.175,.186).translate(consoleX,-4.34,consoleZ),shell);
-  mesh(sheet(12,28,(t,s)=>{
-    const a=(s-.5)*2.58, y=(t-.5)*2;
-    return [consoleX+.316*Math.sin(a),-4.33+y*(.09+.037*Math.cos(a)),
-      consoleZ+.055+.166*Math.cos(a)-.025*y*y];
-  }),visor);
-  for(const side of [-1,1]){
-    const x=consoleX+side*.284;
-    mesh(new T.SphereGeometry(1,12,8).scale(.060,.060,.055).translate(x,-4.33,consoleZ+.105),sensor);
-    mesh(new T.SphereGeometry(.023,12,8).translate(x,-4.33,consoleZ+.148),lamp);
-  }
-
-  const scanRailY=-2.58;
-  for(const x of [.20,.44])tube([[x,scanRailY,-27.5],[x,scanRailY,-41]],.039,alloy);
+  // A small status light is recessed into the bench beside the teaching lily.
+  const switchLight=new T.MeshBasicMaterial({color:0xacecd8,transparent:true,depthWrite:false,opacity:.28});
+  box(-.27,-4.64,-29.85,.12,.06,.48,enamel);
+  box(-.265,-4.606,-29.85,.055,.012,.38,switchLight);
 // These fictional specimens compare shape, without assigning a medical cause.
   const findings={
     '鹿角蕨':['扇状叶冠','上次叶尖分成两叉；本次末端展宽，长出梳齿状叶冠。'],
@@ -142,11 +131,11 @@ export function makeCabin(scene,{compact=false}={}){
   const soil=finish(0x344e48), fern=finish(0x65af85), midrib=finish(0xb5cc89), bell=finish(0xf3ded5);
   const warpedLeaf=finish(0x678580), warpedRib=finish(0x867c8e);
 
-  const warningCues={
-    '鹿角蕨':[[.27,.73,425,.32,1.53]],
-    '羽叶蕨':[[.19,.49,680,.16,.89],[.76,.52,475,.22,.78]],
-    '铃兰':[[.16,.38,780,.12,.96],[.81,.42,593,.17,.94]],
-    '披针叶草':[[.12,.31,360,.12,.91],[.48,.31,325,.13,.89],[.92,.41,287,.18,.83]]
+  const discoveryNotes={
+    '鹿角蕨':[425,.32,1.53],
+    '羽叶蕨':[680,.16,.89],
+    '铃兰':[780,.12,.96],
+    '披针叶草':[360,.12,.91]
   };
   const pots=[];
   function specimen(kind,extra,demo=false){
@@ -242,7 +231,7 @@ export function makeCabin(scene,{compact=false}={}){
     const foot=new T.Mesh(new T.CylinderGeometry(.13,.18,.54,20),enamel);foot.position.y=-.41;group.add(foot);
     const bed=new T.Mesh(new T.CylinderGeometry(.355,.35,.025,36),soil);bed.position.y=-.012;group.add(bed);
     const plant={group,kind,extra,demo,target,archive,finding:extra?findings[kind]:null,
-      scanned:false,marked:false,age:Infinity};
+      scanned:false,marked:false};
     pots.push(plant);return plant;
   }
 const bedLights=[];
@@ -280,7 +269,7 @@ const bedLights=[];
       // Keep specimen positions stable so the room scan matches each pot.
       row.forEach((p,i)=>{const [x,z]=seats[side*4+i];p.group.position.set(x,-4.65,z);p.number=i+1;});
     }
-    for(const p of pots){p.scanned=p.marked=false;p.examined=false;p.away=0;p.watch=0;p.hintAge=-1;p.hintPlayed=false;p.age=Infinity;}
+    for(const p of pots)p.scanned=p.marked=false;
   }
   arrange();
   // Vegetation is batched by material. Leave viewing windows around the six interactive plants.
@@ -518,13 +507,11 @@ const bedLights=[];
     colors.push(paint.r,paint.g,paint.b);
     styles.push(style);
   }
-  const opaqueMaterials=new Set();
   room.updateMatrixWorld(true);
   for(const obj of room.children){
     if(!obj.isMesh)continue;
     const mat=obj.material;
     const growth=foliage.has(mat),flowering=blossoms.has(mat),glassSurface=mat===pane;
-    if(!mat.transparent)opaqueMaterials.add(mat);
     const structure=mat===enamel||mat===alloy;
     const changed=mat===warpedLeaf||mat===warpedRib;
     const density=glassSurface?9:flowering?1610:growth?1350:structure?540:mat===deck?104:214;
@@ -538,9 +525,6 @@ const bedLights=[];
       addPoint(point,tint.multiplyScalar(.65+rand()*.51),changed?2:growth||flowering?1:structure?.32:0);
     });
   }
-  for(const obj of exterior.children){
-    if(obj!==sea && obj!==ceiling && obj.isMesh && !obj.material.transparent)opaqueMaterials.add(obj.material);
-  }
   function pointGeometry(positions,inks,tags,delays=new Float32Array(tags.length)){
     const geometry=new T.BufferGeometry();
     geometry.setAttribute('position',new T.Float32BufferAttribute(positions,3));
@@ -550,13 +534,16 @@ const bedLights=[];
     return geometry;
   }
   const warningStrength={value:0},warningStart={value:9},warningPoint={value:V()};
-  const archiveStrength={value:0},roomReturn={value:0};
+  const archiveStrength={value:0},holdingShape={value:0},glint={value:0};
+  const hintPoint={value:V()},hintGlow={value:0};
   const radarMaterial=new T.ShaderMaterial({
-    uniforms:{scanBlend,age,sweepOrigin:origin,sweepDistance,warningStrength,warningStart,warningPoint,archiveStrength,roomReturn},
+    uniforms:{scanBlend,age,sweepOrigin:origin,sweepDistance,warningStrength,warningStart,warningPoint,
+      archiveStrength,holdingShape,glint,hintPoint,hintGlow,time,motion:{value:reducedMotion?0:1}},
     transparent:true,depthWrite:false,vertexColors:true,
     vertexShader:`
-      uniform float scanBlend, age, warningStrength, warningStart, archiveStrength, roomReturn;
-      uniform vec3 warningPoint;
+      uniform float scanBlend, age, warningStrength, warningStart, archiveStrength, holdingShape, glint, time, motion;
+      uniform vec3 warningPoint,hintPoint;
+      uniform float hintGlow;
       ${sweep}
       attribute float pointStyle, returnDelay;
       varying vec3 ink;
@@ -567,24 +554,33 @@ const bedLights=[];
         float changed=step(1.5,pointStyle)*(1.-step(2.5,pointStyle));
         float archive=step(3.5,pointStyle);
         float anomaly=step(2.5,pointStyle)*(1.-archive);
-        vec4 mv=modelViewMatrix*vec4(p,1.);
+        float organic=step(.5,pointStyle);
+        float nearby=1.-smoothstep(.50,1.05,distance(warningPoint,p));
+        float life=0.;
+        vec3 moved=p;
+        if(organic>.5){
+          float canopy=clamp((p.y+4.66)*1.28,0.,1.);
+          float current=time*.82+p.z*.72+p.x*.44;
+          float freely=1.-max(max(archive,anomaly),nearby*holdingShape);
+          moved.xz+=vec2(sin(current),cos(current*.83))*.15*canopy*canopy*freely*motion*scanBlend;
+          life=pow(.5+.5*sin(time*.67-p.y*4.1+p.z*.72),3.)*canopy*freely*motion;
+          life+=hintGlow*(1.-smoothstep(.05,.31,distance(p,hintPoint)));
+        }
+        vec4 mv=modelViewMatrix*vec4(moved,1.);
         float depth=max(.12,-mv.z);
         float edge=scanEdge(p);
         float revealed=smoothstep(-.20,.72,edge);
         float rim=exp(-edge*edge*5.);
-        float organic=step(.5,pointStyle);
         float structure=step(.2,pointStyle)*(1.-step(.5,pointStyle));
         float size=mix(2.2+1.7*seed,3.+2.5*seed,organic);
         size=mix(size,4.+2.5*seed,anomaly);
         gl_PointSize=clamp(size*6.2/(depth+1.25),1.32+structure*.15,anomaly>.5?8.5:6.8);
         float mist=exp(-depth*.044);
-        ink=color*(1.12+rim*.74+roomReturn*.65+anomaly*.22+structure*.14);
+        ink=color*(1.10+rim*.52+life*.34+anomaly*(.22+glint*.48)+structure*.14);
         opacity=scanBlend*revealed*mist*mix(.74,.99,max(organic,structure));
-        float localAge=age-warningStart-returnDelay;
+        float localAge=age-warningStart-returnDelay*.55;
         float localReturn=smoothstep(-.035,.18,localAge);
-        float nearby=1.-smoothstep(.30,1.1,distance(warningPoint,p));
-        opacity*=1.-warningStrength*(.24+.30*nearby);
-        opacity*=1.-changed*nearby*max(warningStrength,archiveStrength);
+        opacity*=1.-nearby*holdingShape*(.23+changed*.65);
         opacity=mix(opacity,scanBlend*revealed*mist*warningStrength*localReturn,anomaly);
         opacity=mix(opacity,scanBlend*revealed*mist*archiveStrength,archive);
         mv.z+=.023+.040*(anomaly+archive);
@@ -604,10 +600,13 @@ const bedLights=[];
   });
   const cloud=new T.Points(pointGeometry(coords,colors,styles),radarMaterial);
   cloud.layers.enable(1);cloud.renderOrder=5;radar.add(cloud);
+  const comparisonMaterial=radarMaterial.clone();
+  comparisonMaterial.uniforms=radarMaterial.uniforms;
+  comparisonMaterial.depthTest=false;
   for(const [plant,pieces] of variants){
     const positions=[],inks=[],tags=[],delays=[],matrix=new T.Matrix4();
     const base=plant.group.position;
-    const rose=new T.Color(0xe9a6b0),archived=new T.Color(0xb1c0d6);
+    const rose=new T.Color(0xffbd79),archived=new T.Color(0x8ecbf0);
     for(const {geometry,band} of pieces){
       const density=plant.kind==='披针叶草'?3100:2200;
       sampleSurface(geometry,matrix,density*(compact?.60:1),point=>{
@@ -626,7 +625,7 @@ const bedLights=[];
       });
       geometry.dispose();
     }
-    plant.warningCloud=new T.Points(pointGeometry(positions,inks,tags,delays),radarMaterial);
+    plant.warningCloud=new T.Points(pointGeometry(positions,inks,tags,delays),comparisonMaterial);
     plant.warningCloud.layers.enable(1);plant.warningCloud.renderOrder=6;plant.warningCloud.visible=false;
     radar.add(plant.warningCloud);
     const oldPositions=[],oldInks=[],oldTags=[];
@@ -638,89 +637,93 @@ const bedLights=[];
       geometry.dispose();
     }
     plant.archive.length=0;
-    plant.archiveCloud=new T.Points(pointGeometry(oldPositions,oldInks,oldTags),radarMaterial);
+    plant.archiveCloud=new T.Points(pointGeometry(oldPositions,oldInks,oldTags),comparisonMaterial);
     plant.archiveCloud.layers.enable(1);plant.archiveCloud.renderOrder=6;plant.archiveCloud.visible=false;
     radar.add(plant.archiveCloud);
   }
-  const sweepComplete=2.50;
-  let scannedPlant=null, scanEnd=7, pendingCues=[];
+  const sweepComplete=2.5, returnDuration=1.45;
+  const eased=T.MathUtils.smoothstep;
+  let radarEnabled=false,modeProgress=0,scannedPlant=null,scanEnd=0,pendingCues=[];
+  let focusedPlant=null,hintAge=0;
+  function setFocus(plant){
+    if(plant===focusedPlant)return;
+    focusedPlant=plant;
+    hintAge=0;
+    if(plant?.extra)hintPoint.value.copy(plant.group.position).add(plant.target);
+  }
+  function setRadar(enabled,point,keepReading=false){
+    if(enabled===radarEnabled)return;
+    radarEnabled=enabled;
+    if(enabled){if(point)origin.value.copy(point);radar.visible=true;}
+    else if(!keepReading)clearReading();
+  }
+  function clearReading(){
+    if(scannedPlant?.warningCloud){
+      scannedPlant.warningCloud.visible=false;
+      scannedPlant.archiveCloud.visible=false;
+    }
+    scannedPlant=null;
+    warningStrength.value=archiveStrength.value=holdingShape.value=glint.value=0;
+    pendingCues=[];
+  }
   function scanStage(){
-    if(!radar.visible)return '';
-    if(age.value<.28)return '头盔启动';
-    if(age.value<1.21)return '读取近处叶面与花台';
-    if(age.value<sweepComplete)return '读取步道与拱顶';
-    if(age.value<scanDuration && scannedPlant?.extra)return '比对上次记录与本次点云';
-    if(age.value<scanDuration)return '重建完成 · 比对'+(scannedPlant?.kind??'植物')+'的形状';
-    if(age.value<scanEnd-1.3)return '转动视线，观察整个温室';
-    return '正在恢复日常视野';
+    if(!radarEnabled)return radar.visible?'正在恢复日常视野':'';
+    if(modeProgress<.38)return scannedPlant?.demo?'从铃兰叶缘开始扫描':'雷达正在读取近处';
+    if(modeProgress<.999)return '沿花台重建步道与拱顶';
+    if(scannedPlant?.extra && age.value<warningStart.value)return '正在调取旧轮廓';
+    if(scannedPlant?.extra)return '正在叠合本次变化';
+    return scannedPlant?'正在比对形态':'雷达视野已开启';
   }
   function scanAt(point,plant=null){
-    restoreView();
-    for(const p of pots)p.age=Infinity;
+    clearReading();
+    const entering=!radarEnabled;
+    setRadar(true,point);
     scannedPlant=plant;
-    origin.value.copy(point);age.value=0;radar.visible=true;
-    scanEnd=plant?.demo?7.6:7.15;
-    pendingCues=[
-      {at:.45,pitch:478,duration:.11,bend:1.16,position:point.clone()},
-      {at:sweepComplete,pitch:229,duration:.34,bend:1.16,position:null}
-    ];
+    age.value=0;
+    scanEnd=entering?scanDuration:plant?.extra?2.45:1.1;
+    if(entering)pendingCues.push({at:sweepComplete,pitch:229,duration:.34,bend:1.16,position:null});
     if(plant?.warningCloud){
       warningPoint.value.copy(plant.target).add(plant.group.position);
-      warningStart.value=3.13;
-      for(const [start,span,pitch,duration,bend] of warningCues[plant.kind]){
-        pendingCues.push({at:warningStart.value+start+span*.18,pitch,duration,bend,position:warningPoint.value.clone(),warning:true});
-      }
-      pendingCues.sort((a,b)=>a.at-b.at);
+      warningStart.value=entering?3.13:1.12;
+      const [pitch,duration,bend]=discoveryNotes[plant.kind];
+      if(!plant.scanned)pendingCues.push({at:warningStart.value+.38,pitch,duration,bend,position:warningPoint.value.clone(),warning:true});
     }
   }
   function restoreView(){
-    radar.visible=false;scanBlend.value=0;scannedPlant=null;warningStrength.value=0;
-    archiveStrength.value=roomReturn.value=0;sweepDistance.value=-2;
-    pendingCues=[];
+    clearReading();setFocus(null);hintGlow.value=0;
+    radarEnabled=false;radar.visible=false;modeProgress=scanBlend.value=0;sweepDistance.value=-2;
     waterFog.color.copy(dayFog);
-    for(const mat of opaqueMaterials)mat.colorWrite=true;
     pane.opacity=.085;
-    ceiling.visible=bubbles.visible=true;
-    for(const light of bedLights)light.visible=true;
-    for(const p of pots)if(p.warningCloud)p.warningCloud.visible=p.archiveCloud.visible=false;
   }
   function tick(dt,now,onCue){
     time.value=now*.001;age.value+=dt;
     observation.value+=((observing?1:0)-observation.value)*(1-Math.exp(-dt*3.5));
     lamp.color.setRGB(1,.73+.09*Math.sin(now*.003),.34);
-    for(const p of pots)if(Number.isFinite(p.age))p.age+=dt;
+    hintAge+=dt;
+    const lightGoal=focusedPlant===teacher?.95:.28;
+    switchLight.opacity+=(lightGoal-switchLight.opacity)*(1-Math.exp(-dt*6));
+    hintGlow.value=!reducedMotion&&focusedPlant?.extra&&!focusedPlant.scanned&&!scannedPlant
+      ?1.7*eased(hintAge,.12,.40)*(1-eased(hintAge,.45,1.14)):0;
     if(radar.visible){
       const t=age.value;
       while(pendingCues.length && pendingCues[0].at<=t){
         const cue=pendingCues.shift();
         onCue?.(cue);
       }
-      if(t>=scanEnd)restoreView();
-      else{
-        const eased=T.MathUtils.smoothstep;
-        const restoring=eased(t,scanEnd-1.34,scanEnd);
-        scanBlend.value=eased(t,.18,1.85)*(1-restoring);
-        sweepDistance.value=-1.2+26*clamp((t-.16)/(sweepComplete-.16),0,1)*(1-restoring);
-        roomReturn.value=eased(t,2.16,2.54)*(1-eased(t,2.61,3.02));
-        waterFog.color.lerpColors(dayFog,helmetFog,scanBlend.value);
-        // Opaque geometry still supplies depth when the scan supplies all visible surfaces.
-        const fullyScanned=t>=sweepComplete && sweepDistance.value>23.5;
-        for(const mat of opaqueMaterials)mat.colorWrite=!fullyScanned;
-        for(const light of bedLights)light.visible=scanBlend.value<.10;
-        pane.opacity=.085*(1-eased(t,.30,1.8)*(1-restoring));
-        ceiling.visible=scanBlend.value<.98;
-        bubbles.visible=scanBlend.value<.75;
-        if(scannedPlant?.warningCloud){
-          const elapsed=t-warningStart.value;
-          archiveStrength.value=eased(t,2.50,2.76)*(1-eased(t,3.26,3.65));
-          scannedPlant.archiveCloud.visible=archiveStrength.value>0;
-          scannedPlant.warningCloud.visible=elapsed>=0;
-          let flash=0;
-          for(const [start,duration] of warningCues[scannedPlant.kind]){
-            flash=Math.max(flash,Math.sin(Math.PI*clamp((elapsed-start)/duration,0,1))**2);
-          }
-          warningStrength.value=eased(elapsed,0,.30)*(.76+.24*flash);
-        }
+      modeProgress=clamp(modeProgress+(radarEnabled?dt/sweepComplete:-dt/returnDuration),0,1);
+      scanBlend.value=eased(modeProgress,0,.96);
+      sweepDistance.value=-1.2+37*eased(modeProgress,0,1);
+      waterFog.color.lerpColors(dayFog,helmetFog,scanBlend.value);
+      pane.opacity=.085*(1-scanBlend.value);
+      radar.visible=radarEnabled||modeProgress>0;
+      if(scannedPlant?.warningCloud){
+        const elapsed=t-warningStart.value;
+        holdingShape.value=eased(elapsed,-1.08,-.64);
+        archiveStrength.value=eased(elapsed,-.76,-.46)*(1-.49*eased(elapsed,.06,.42));
+        scannedPlant.archiveCloud.visible=archiveStrength.value>.01;
+        scannedPlant.warningCloud.visible=elapsed>=0;
+        warningStrength.value=eased(elapsed,0,.70);
+        glint.value=reducedMotion||scannedPlant.scanned?0:eased(elapsed,.12,.34)*(1-eased(elapsed,.36,.84));
       }
     }
     if(scanBlend.value>.78)return;
@@ -744,11 +747,14 @@ const bedLights=[];
   const passage=scene.getObjectByName('lake-surface')?.material.uniforms.uPassage;
   function open(){restoreView();room.visible=true;lamp.color.setHex(0xffdc91);if(passage)passage.value=1;}
   function restartSurvey(){
-    for(const p of pots){p.scanned=p.marked=false;p.age=Infinity;}
+    for(const p of pots)p.scanned=p.marked=false;
+    exitLight.opacity=0;
   }
-  reset();return {room,pots,teacher,bedLights,radar,scanAt,scanStage,
-    scanSettling:()=>radar.visible&&age.value<(scannedPlant?.demo?sweepComplete:.68),
-    comparisonTarget:()=>radar.visible&&scannedPlant?.extra&&age.value>=2.4&&age.value<scanEnd-1.34?warningPoint.value:null,
-    lensShade:()=>radar.visible?.22*scanBlend.value+.54*Math.exp(-((age.value-.30)**2)*48):0,
-    setObservation(value){observing=value;},arrange,tick,open,restoreView,restartSurvey,waterFog,reset(){reset();if(passage)passage.value=0;}};
+  reset();return {room,pots,teacher,bedLights,radar,scanAt,scanStage,setRadar,setFocus,clearReading,
+    unlockExit(){exitLight.opacity=.88;},
+    radarEnabled:()=>radarEnabled,
+    changingView:()=>radarEnabled?modeProgress<.999:modeProgress>.001,
+    scanReady:()=>age.value>=scanEnd && modeProgress>=.999,
+    lensShade:()=>.44*scanBlend.value,
+    setObservation(value){observing=value;},arrange,tick,open,restartSurvey,waterFog,reset(){reset();if(passage)passage.value=0;}};
 }

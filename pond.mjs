@@ -8,6 +8,7 @@ const TARGETS = [
   { point: new THREE.Vector3(0.26, -0.92, -4.19), name: '木台睡莲' },
   { point: new THREE.Vector3(-0.55, -0.56, -7.12), name: '垂穗花廊' },
   { point: new THREE.Vector3(2.08, -0.48, -12.25), name: '白石后的水岸' },
+  { point: new THREE.Vector3(-0.28, -0.74, -15.28), name: '坡道前的睡莲' },
 ];
 
 export function keepDockClear(position) {
@@ -886,6 +887,8 @@ export function makePond({ reflections = true, compact = false } = {}) {
   lotus(0.23, -4.12, 0.18, 0.193, 0.7);
   lotus(0.22, -7.14, 0.16, 0.177, 1.58);
   lotus(-0.43, -7.73, 0.19, 0.173, 0.48);
+  lotus(-0.32, -15.32, 0.32, 0.24, 0.65);
+  lotus(-0.87, -15.70, 0.20, 0.16, 1.2);
   pad(-1.03, -3.47, 0.33, 1.4);
   pad(-0.49, -4.00, 0.29, 3.4);
   pad(0.45, -4.13, 0.31, 4.8);
@@ -894,6 +897,8 @@ export function makePond({ reflections = true, compact = false } = {}) {
   pad(0.49, -7.03, 0.24, 2.1);
   pad(-0.60, -7.74, 0.26, 0.76);
   pad(0.27, -8.02, 0.24, 4.3);
+  pad(-0.09, -15.12, 0.34, 2.6);
+  pad(-0.91, -15.66, 0.29, 4.8);
 
   instantiate(rounded, rocks, material('#ffffff'));
   instantiate(stemGeometry, twigs, material('#ffffff', 0, swaying));
